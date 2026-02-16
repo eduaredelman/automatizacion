@@ -44,8 +44,12 @@ class WispHubClient:
                     timeout=30,
                     **kwargs,
                 )
+                if resp.status_code >= 400:
+                    logger.error(f"WispHub {resp.status_code} response: {resp.text[:500]}")
                 resp.raise_for_status()
-                return resp.json()
+                result = resp.json()
+                logger.debug(f"WispHub response: {str(result)[:300]}")
+                return result
             except requests.RequestException as e:
                 logger.warning(f"WispHub attempt {attempt} failed: {e}")
                 if attempt < self.MAX_RETRIES:
@@ -63,7 +67,8 @@ class WispHubClient:
         data = self._request("GET", "/clientes/", params={"celular": telefono})
         if data and data.get("results"):
             cliente = data["results"][0]
-            logger.info(f"Client found by phone {telefono}: {cliente.get('nombre')}")
+            cid = cliente.get("id_servicio") or cliente.get("id")
+            logger.info(f"Client found by phone {telefono}: {cliente.get('nombre')} (id={cid})")
             return cliente
         logger.info(f"No client found for phone {telefono}")
         return None
@@ -73,14 +78,15 @@ class WispHubClient:
         data = self._request("GET", "/clientes/", params={"search": nombre})
         if data and data.get("results"):
             cliente = data["results"][0]
-            logger.info(f"Client found by name '{nombre}': {cliente.get('id')}")
+            cid = cliente.get("id_servicio") or cliente.get("id")
+            logger.info(f"Client found by name '{nombre}': (id={cid})")
             return cliente
         return None
 
     def buscar_cliente_por_codigo(self, codigo: str) -> dict | None:
         """Search for a client by client code/ID."""
         data = self._request("GET", f"/clientes/{codigo}/")
-        if data and data.get("id"):
+        if data and (data.get("id_servicio") or data.get("id")):
             logger.info(f"Client found by code {codigo}: {data.get('nombre')}")
             return data
         return None
@@ -108,10 +114,18 @@ class WispHubClient:
 
         Returns: {"tiene_deuda": bool, "monto_deuda": float, "factura_id": int|None}
         """
+        # Try endpoint: /facturas/?id_servicio={id}&estado=pendiente
         data = self._request(
-            "GET", f"/clientes/{cliente_id}/facturas/",
-            params={"estado": "pendiente"},
+            "GET", "/facturas/",
+            params={"id_servicio": cliente_id, "estado": "pendiente"},
         )
+
+        # Fallback: try nested endpoint /clientes/{id}/facturas/
+        if data is None:
+            data = self._request(
+                "GET", f"/clientes/{cliente_id}/facturas/",
+                params={"estado": "pendiente"},
+            )
 
         if not data or not data.get("results"):
             logger.info(f"No pending invoices for client {cliente_id}")
@@ -136,6 +150,7 @@ class WispHubClient:
     def registrar_pago(self, cliente_id: int, data: dict) -> dict:
         """Register a payment in WispHub."""
         payload = {
+            "id_servicio": cliente_id,
             "cliente": cliente_id,
             "monto": data.get("monto"),
             "fecha_pago": data.get("fecha"),
@@ -148,7 +163,12 @@ class WispHubClient:
             ),
         }
 
+        # Try /pagos/ endpoint
         result = self._request("POST", "/pagos/", json=payload)
+
+        # Fallback: try /clientes/{id}/pagos/
+        if result is None:
+            result = self._request("POST", f"/clientes/{cliente_id}/pagos/", json=payload)
 
         if result:
             logger.info(f"Payment registered for client {cliente_id}: {data.get('codigo_operacion')}")
@@ -158,7 +178,9 @@ class WispHubClient:
 
     def marcar_factura_pagada(self, factura_id: int) -> bool:
         """Mark an invoice as paid."""
-        result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "pagada"})
+        result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "pagado"})
+        if result is None:
+            result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "pagada"})
         if result:
             logger.info(f"Invoice {factura_id} marked as paid")
             return True

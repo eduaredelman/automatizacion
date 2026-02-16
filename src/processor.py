@@ -115,7 +115,7 @@ def process_receipt(image_path: str, phone_number: str) -> dict:
         send_message(phone_number, MSG_CLIENTE_NO_ENCONTRADO)
         return _build_result(data, accion="pedir_imagen", pago_valido=False, cliente_encontrado=False)
 
-    cliente_id = cliente.get("id")
+    cliente_id = cliente.get("id_servicio") or cliente.get("id")
     logger.info(f"[{phone_number}] Client found: {cliente.get('nombre')} (id={cliente_id})")
 
     # ── Step 6: Query pending debt ───────────────────────────────────

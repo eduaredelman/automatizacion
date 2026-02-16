@@ -73,6 +73,15 @@ def health():
     return jsonify({"status": "ok", "service": "payment-processor"}), 200
 
 
+@app.route("/debug/client/<phone>", methods=["GET"])
+def debug_client(phone):
+    """Debug: look up client by phone and show raw WispHub data."""
+    from src.wisphub import WispHubClient
+    client = WispHubClient()
+    data = client._request("GET", "/clientes/", params={"celular": phone})
+    return jsonify({"raw_response": data}), 200
+
+
 if __name__ == "__main__":
     logger.info("Starting Payment Processor...")
     app.run(host="0.0.0.0", port=8085, debug=True)
