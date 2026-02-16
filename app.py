@@ -78,8 +78,33 @@ def debug_client(phone):
     """Debug: look up client by phone and show raw WispHub data."""
     from src.wisphub import WispHubClient
     client = WispHubClient()
-    data = client._request("GET", "/clientes/", params={"celular": phone})
-    return jsonify({"raw_response": data}), 200
+    # Search with and without country code
+    tel_local = phone[2:] if len(phone) > 9 and phone.startswith("51") else phone
+    results = {}
+    for field in ("celular", "telefono"):
+        for tel in (tel_local, phone):
+            key = f"{field}={tel}"
+            data = client._request("GET", "/clientes/", params={field: tel})
+            if data and data.get("results"):
+                results[key] = [
+                    {"id_servicio": c.get("id_servicio"), "nombre": c.get("nombre"),
+                     "telefono": c.get("telefono"), "celular": c.get("celular")}
+                    for c in data["results"][:3]
+                ]
+    return jsonify({"search_results": results}), 200
+
+
+@app.route("/debug/facturas/<int:client_id>", methods=["GET"])
+def debug_facturas(client_id):
+    """Debug: check facturas endpoints for a client."""
+    from src.wisphub import WispHubClient
+    client = WispHubClient()
+    results = {}
+    # Try different endpoint patterns
+    results["facturas_by_id_servicio"] = client._request("GET", "/facturas/", params={"id_servicio": client_id})
+    results["facturas_by_cliente"] = client._request("GET", "/facturas/", params={"cliente": client_id})
+    results["nested_facturas"] = client._request("GET", f"/clientes/{client_id}/facturas/")
+    return jsonify(results), 200
 
 
 if __name__ == "__main__":

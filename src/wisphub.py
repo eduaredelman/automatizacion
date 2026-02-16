@@ -63,13 +63,26 @@ class WispHubClient:
     # ------------------------------------------------------------------
 
     def buscar_cliente_por_telefono(self, telefono: str) -> dict | None:
-        """Search for a client by phone number."""
-        data = self._request("GET", "/clientes/", params={"celular": telefono})
-        if data and data.get("results"):
-            cliente = data["results"][0]
-            cid = cliente.get("id_servicio") or cliente.get("id")
-            logger.info(f"Client found by phone {telefono}: {cliente.get('nombre')} (id={cid})")
-            return cliente
+        """Search for a client by phone number.
+
+        Strips Peru country code (51) if present to match WispHub's 9-digit format.
+        Searches both 'celular' and 'telefono' fields.
+        """
+        # Strip country code 51 for Peru
+        tel_local = telefono
+        if len(telefono) > 9 and telefono.startswith("51"):
+            tel_local = telefono[2:]
+
+        # Try with celular field
+        for field in ("celular", "telefono"):
+            for tel in (tel_local, telefono):
+                data = self._request("GET", "/clientes/", params={field: tel})
+                if data and data.get("results"):
+                    cliente = data["results"][0]
+                    cid = cliente.get("id_servicio") or cliente.get("id")
+                    logger.info(f"Client found by {field}={tel}: {cliente.get('nombre')} (id={cid})")
+                    return cliente
+
         logger.info(f"No client found for phone {telefono}")
         return None
 
