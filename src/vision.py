@@ -1,129 +1,50 @@
-import base64
-import json
+"""Receipt data extraction orchestrator.
+
+Pipeline:
+1. Tesseract OCR (fast, free) → parse with regex
+2. If OCR confidence is low → LLaVA via Ollama (local AI)
+"""
 import logging
-from pathlib import Path
 
-import anthropic
-
-import config
+from src.ocr_parser import parse_receipt_ocr
+from src.llava_vision import extract_receipt_llava, is_ollama_available
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-
-EXTRACTION_PROMPT = """Eres un experto en analisis de comprobantes de pago del Peru.
-Analiza esta imagen de un comprobante/boucher de pago y extrae los datos.
-
-Medios de pago que debes reconocer:
-- Yape (app morada, logo verde/morado)
-- Plin (logo azul/celeste)
-- BCP (Banco de Credito, app/web naranja)
-- Interbank (app/web verde)
-- BBVA (app/web azul)
-- Scotiabank (app/web roja)
-- BanBif
-- Banco de la Nacion
-- Tarjeta de credito o debito
-- Transferencia bancaria
-- Otro
-
-Responde UNICAMENTE con un JSON valido (sin markdown, sin texto adicional, sin ```):
-
-{
-  "es_recibo_valido": true,
-  "imagen_legible": true,
-  "medio_pago": "Yape|Plin|BCP|Interbank|BBVA|Scotiabank|BanBif|Banco de la Nacion|Tarjeta|Transferencia|Otro",
-  "banco": "nombre del banco o app",
-  "formato_comprobante": "app_movil|web|captura_pantalla|foto_pantalla|pdf|otro",
-  "nombre_pagador": "nombre completo del que paga",
-  "nombre_receptor": "nombre completo del que recibe",
-  "monto": 0.00,
-  "moneda": "PEN|USD",
-  "fecha": "YYYY-MM-DD",
-  "hora": "HH:MM:SS",
-  "codigo_operacion": "numero de operacion o codigo de transaccion",
-  "ultimos_4_digitos": "ultimos 4 digitos de cuenta o tarjeta",
-  "celular_emisor": "numero de celular del que paga"
-}
-
-Reglas estrictas:
-- Si la imagen NO es un comprobante de pago: "es_recibo_valido": false y todos los demas campos null.
-- Si la imagen es borrosa o no se pueden leer los datos clave (monto y codigo): "imagen_legible": false.
-- El monto DEBE ser un numero decimal (ejemplo: 50.00, no "S/ 50.00").
-- La moneda es "PEN" para soles (S/) y "USD" para dolares ($).
-- La fecha DEBE estar en formato YYYY-MM-DD.
-- La hora DEBE estar en formato HH:MM:SS (24h). Si no hay hora, usa null.
-- El codigo_operacion es el numero de operacion, referencia o ID de transaccion.
-- Si un campo no es visible o no existe en la imagen, usa null.
-- NUNCA inventes datos. Si no lo ves claramente, usa null.
-"""
-
 
 def extract_receipt_data(image_path: str) -> dict:
-    """Extract payment data from a receipt image using Claude Vision.
+    """Extract payment data from a receipt image.
 
-    Returns a dict with all extracted fields or error info.
+    Strategy:
+    1. Try Tesseract OCR first (fast, free)
+    2. If confidence is high/medium → return OCR result
+    3. If confidence is low/none → try LLaVA (local AI with vision)
+    4. If LLaVA not available → return OCR result anyway
     """
-    image_path = Path(image_path)
+    # Step 1: OCR
+    logger.info(f"Step 1: Trying Tesseract OCR for {image_path}")
+    ocr_result = parse_receipt_ocr(image_path)
+    confidence = ocr_result.get("ocr_confidence", "none")
 
-    if not image_path.exists():
-        logger.error(f"Image not found: {image_path}")
-        return {"es_recibo_valido": False, "imagen_legible": False, "error": "Imagen no encontrada"}
+    if confidence in ("high", "medium"):
+        logger.info(f"OCR confidence={confidence}, using OCR result")
+        return ocr_result
 
-    image_data = image_path.read_bytes()
-    base64_image = base64.standard_b64encode(image_data).decode("utf-8")
+    # Step 2: LLaVA fallback
+    logger.info(f"OCR confidence={confidence}, trying LLaVA fallback")
 
-    suffix = image_path.suffix.lower()
-    media_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }
-    media_type = media_types.get(suffix, "image/jpeg")
+    if not is_ollama_available():
+        logger.warning("Ollama/LLaVA not available, returning OCR result")
+        return ocr_result
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64_image,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": EXTRACTION_PROMPT,
-                        },
-                    ],
-                }
-            ],
-        )
+    llava_result = extract_receipt_llava(image_path)
 
-        raw_text = response.content[0].text.strip()
-        logger.info(f"Claude Vision raw response: {raw_text}")
+    if llava_result.get("es_recibo_valido"):
+        logger.info("LLaVA extracted valid receipt data")
+        return llava_result
 
-        # Clean response in case Claude wraps it in markdown
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("\n", 1)[1]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            raw_text = raw_text.strip()
+    # If both fail, return whichever has more data
+    if ocr_result.get("monto") is not None:
+        return ocr_result
 
-        data = json.loads(raw_text)
-        return data
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude response as JSON: {e} | raw: {raw_text}")
-        return {"es_recibo_valido": False, "imagen_legible": False, "error": "No se pudo interpretar la respuesta"}
-    except anthropic.APIError as e:
-        logger.error(f"Anthropic API error: {e}")
-        return {"es_recibo_valido": False, "imagen_legible": False, "error": f"Error de API: {e}"}
+    return llava_result
