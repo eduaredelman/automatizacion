@@ -23,7 +23,7 @@ class WispHubClient:
         self.base_url = config.WISPHUB_API_URL.rstrip("/")
         self.company_id = config.WISPHUB_COMPANY_ID
         self.headers = {
-            "Authorization": f"Token {config.WISPHUB_API_TOKEN}",
+            "Authorization": f"Api-Key {config.WISPHUB_API_TOKEN}",
             "Content-Type": "application/json",
         }
 
