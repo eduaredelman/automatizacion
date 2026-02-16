@@ -127,33 +127,35 @@ class WispHubClient:
 
         Returns: {"tiene_deuda": bool, "monto_deuda": float, "factura_id": int|None}
         """
-        # Try endpoint: /facturas/?id_servicio={id}&estado=pendiente
+        # Get all facturas for this client
         data = self._request(
             "GET", "/facturas/",
-            params={"id_servicio": cliente_id, "estado": "pendiente"},
+            params={"id_servicio": cliente_id},
         )
 
-        # Fallback: try nested endpoint /clientes/{id}/facturas/
-        if data is None:
-            data = self._request(
-                "GET", f"/clientes/{cliente_id}/facturas/",
-                params={"estado": "pendiente"},
-            )
-
         if not data or not data.get("results"):
-            logger.info(f"No pending invoices for client {cliente_id}")
+            logger.info(f"No invoices found for client {cliente_id}")
             return {"tiene_deuda": False, "monto_deuda": 0.0, "factura_id": None}
 
-        facturas = data["results"]
-        monto_total = sum(float(f.get("total", 0)) for f in facturas)
-        factura_id = facturas[0].get("id")
+        # Filter for pending invoices (Pendiente, not Pagada)
+        facturas_pendientes = [
+            f for f in data["results"]
+            if f.get("estado", "").lower() in ("pendiente", "no pagada", "vencida")
+        ]
+
+        if not facturas_pendientes:
+            logger.info(f"No pending invoices for client {cliente_id} (all paid)")
+            return {"tiene_deuda": False, "monto_deuda": 0.0, "factura_id": None}
+
+        monto_total = sum(float(f.get("total", 0)) for f in facturas_pendientes)
+        factura_id = facturas_pendientes[0].get("id_factura") or facturas_pendientes[0].get("id")
 
         logger.info(f"Client {cliente_id} has debt: S/ {monto_total}, invoice #{factura_id}")
         return {
             "tiene_deuda": True,
             "monto_deuda": round(monto_total, 2),
             "factura_id": factura_id,
-            "facturas": facturas,
+            "facturas": facturas_pendientes,
         }
 
     # ------------------------------------------------------------------
@@ -164,7 +166,6 @@ class WispHubClient:
         """Register a payment in WispHub."""
         payload = {
             "id_servicio": cliente_id,
-            "cliente": cliente_id,
             "monto": data.get("monto"),
             "fecha_pago": data.get("fecha"),
             "medio_pago": data.get("medio_pago"),
@@ -176,12 +177,7 @@ class WispHubClient:
             ),
         }
 
-        # Try /pagos/ endpoint
         result = self._request("POST", "/pagos/", json=payload)
-
-        # Fallback: try /clientes/{id}/pagos/
-        if result is None:
-            result = self._request("POST", f"/clientes/{cliente_id}/pagos/", json=payload)
 
         if result:
             logger.info(f"Payment registered for client {cliente_id}: {data.get('codigo_operacion')}")
@@ -191,9 +187,7 @@ class WispHubClient:
 
     def marcar_factura_pagada(self, factura_id: int) -> bool:
         """Mark an invoice as paid."""
-        result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "pagado"})
-        if result is None:
-            result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "pagada"})
+        result = self._request("PATCH", f"/facturas/{factura_id}/", json={"estado": "Pagada"})
         if result:
             logger.info(f"Invoice {factura_id} marked as paid")
             return True
