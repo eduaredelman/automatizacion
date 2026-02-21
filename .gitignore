@@ -1,28 +1,39 @@
-# Secrets
+# ── Secrets (NUNCA commitear) ──────────────────────────────────
 .env
+.env.local
+.env.production
 
-# Python
+# ── Node.js ────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+.npm
+
+# ── Next.js build ──────────────────────────────────────────────
+.next/
+out/
+frontend/.next/
+frontend/out/
+
+# ── Python ─────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 venv/
 .venv/
 
-# Database
+# ── Database ───────────────────────────────────────────────────
 payments.db
+*.sqlite
 
-# Receipt images
-pending_receipts/*
-processed_receipts/*
-error_receipts/*
-!pending_receipts/.gitkeep
-!processed_receipts/.gitkeep
-!error_receipts/.gitkeep
+# ── Uploads / logs / npm cache ─────────────────────────────────
+backend/uploads/
+backend/logs/
+logs/
+*.log
+*-audit.json
 
-# Logs
-logs/*.log
-!logs/.gitkeep
-
-# IDE
+# ── IDE ────────────────────────────────────────────────────────
 .vscode/
 .idea/
+*.swp
+.DS_Store

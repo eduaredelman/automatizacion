@@ -1,23 +1,132 @@
+version: '3.9'
+
+# ============================================================
+# FiberPeru WhatsApp Payment Platform v2.0 - Docker Compose
+# ============================================================
+
 services:
-  payment-processor:
-    build: .
-    container_name: fiberperu-pagos
-    restart: always
+
+  # ── PostgreSQL ────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fiberperu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: whatsapp_payments
+      POSTGRES_USER: fiberperu
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-FiberPeru2024!}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fiberperu -d whatsapp_payments"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fiberperu-network
+
+  # ── Python OCR Microservice (existing Flask app) ──────────
+  python-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fiberperu-python-ocr
+    restart: unless-stopped
+    command: python python-ocr/app.py
+    environment:
+      PORT: 8085
+      WISPHUB_API_URL: ${WISPHUB_API_URL}
+      WISPHUB_API_TOKEN: ${WISPHUB_API_TOKEN}
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_ID}
     ports:
       - "8085:8085"
-    env_file:
-      - .env
+    volumes:
+      - uploads_data:/app/uploads
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./payments.db:/app/payments.db
-      - ./logs:/app/logs
-      - ./pending_receipts:/app/pending_receipts
-      - ./processed_receipts:/app/processed_receipts
-      - ./error_receipts:/app/error_receipts
     networks:
-      - fiber-peru_fiberperu-network
+      - fiberperu-network
+
+  # ── Node.js Backend ───────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fiberperu-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://fiberperu:${DB_PASSWORD:-FiberPeru2024!}@postgres:5432/whatsapp_payments
+      OCR_SERVICE_URL: http://python-ocr:8085
+      UPLOADS_DIR: /app/uploads
+      LOG_DIR: /app/logs
+    ports:
+      - "3001:3001"
+    volumes:
+      - uploads_data:/app/uploads
+      - backend_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      python-ocr:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - fiberperu-network
+
+  # ── Next.js Frontend ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fiberperu-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:3001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - fiberperu-network
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: fiberperu-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - fiberperu-network
+
+volumes:
+  postgres_data:
+    name: fiberperu-postgres-data
+  uploads_data:
+    name: fiberperu-uploads
+  backend_logs:
+    name: fiberperu-logs
 
 networks:
-  fiber-peru_fiberperu-network:
-    external: true
+  fiberperu-network:
+    name: fiberperu-network
+    driver: bridge
