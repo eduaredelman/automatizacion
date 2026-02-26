@@ -65,7 +65,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ""
+        NEXT_PUBLIC_API_URL: "https://pagos.fiber-peru.com"
         NEXT_PUBLIC_SOCKET_URL: "https://pagos.fiber-peru.com"
     container_name: fiberperu-pagos
     restart: unless-stopped
