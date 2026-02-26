@@ -29,29 +29,6 @@ services:
     networks:
       - fiberperu-network
 
-  # ── Python OCR Microservice (existing Flask app) ──────────
-  python-ocr:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: fiberperu-python-ocr
-    restart: unless-stopped
-    command: python python-ocr/app.py
-    environment:
-      PORT: 8085
-      WISPHUB_API_URL: ${WISPHUB_API_URL}
-      WISPHUB_API_TOKEN: ${WISPHUB_API_TOKEN}
-      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN}
-      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_ID}
-    ports:
-      - "8085:8085"
-    volumes:
-      - uploads_data:/app/uploads
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - fiberperu-network
-
   # ── Node.js Backend ───────────────────────────────────────
   backend:
     build:
@@ -65,7 +42,6 @@ services:
       NODE_ENV: production
       PORT: 3001
       DATABASE_URL: postgresql://fiberperu:${DB_PASSWORD:-FiberPeru2024!}@postgres:5432/whatsapp_payments
-      OCR_SERVICE_URL: http://python-ocr:8085
       UPLOADS_DIR: /app/uploads
       LOG_DIR: /app/logs
     ports:
@@ -76,8 +52,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      python-ocr:
-        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
       interval: 30s
@@ -85,38 +59,25 @@ services:
       retries: 3
     networks:
       - fiberperu-network
+      - proxy
 
   # ── Next.js Frontend ──────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: fiberperu-frontend
+      args:
+        NEXT_PUBLIC_API_URL: ""
+        NEXT_PUBLIC_SOCKET_URL: "https://pagos.fiber-peru.com"
+    container_name: fiberperu-pagos
     restart: unless-stopped
-    environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-      NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-http://localhost:3001}
     ports:
-      - "3000:3000"
+      - "8085:3000"
     depends_on:
       - backend
     networks:
       - fiberperu-network
-
-  # ── Nginx Reverse Proxy ───────────────────────────────────
-  nginx:
-    image: nginx:1.25-alpine
-    container_name: fiberperu-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - backend
-      - frontend
-    networks:
-      - fiberperu-network
+      - proxy
 
 volumes:
   postgres_data:
@@ -130,3 +91,6 @@ networks:
   fiberperu-network:
     name: fiberperu-network
     driver: bridge
+  proxy:
+    external: true
+    name: proxy

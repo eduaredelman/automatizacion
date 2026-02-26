@@ -2,6 +2,7 @@ const { query } = require('../config/database');
 const whatsapp = require('../services/whatsapp.service');
 const ai = require('../services/ai.service');
 const payment = require('../services/payment.service');
+const wisphub = require('../services/wisphub.service');
 const logger = require('../utils/logger');
 const { getPaymentBlock } = require('../config/payment-info');
 
@@ -184,7 +185,7 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     );
     const history = historyResult.rows.reverse();
 
-    // 2. Obtener info del cliente (si está en DB)
+    // 2. Obtener info del cliente — primero BD local, si no hay → WispHub
     let clientInfo = null;
     const clientResult = await query(
       `SELECT cl.name, cl.plan, cl.debt_amount
@@ -195,6 +196,38 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     );
     if (clientResult.rows.length) {
       clientInfo = clientResult.rows[0];
+    } else {
+      // Cliente no sincronizado aún → buscar en WispHub al vuelo
+      try {
+        const wispClient = await wisphub.buscarClientePorTelefono(phone);
+        if (wispClient) {
+          const clientId = String(wispClient.id_servicio || wispClient.id);
+          const clientName = wispClient.nombre || wispClient.name || 'N/A';
+          const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+          // Guardar en BD local para próximas interacciones
+          await query(
+            `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())
+             ON CONFLICT (wisphub_id) DO UPDATE
+               SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()`,
+            [clientId, phone, clientName, clientId, clientPlan]
+          );
+
+          // Actualizar nombre real en la conversación (reemplaza el display name de WhatsApp)
+          await query(
+            `UPDATE conversations SET display_name = $1 WHERE id = $2`,
+            [clientName, conversation.id]
+          );
+
+          clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
+          logger.info('Cliente identificado desde WispHub', { phone, name: clientName, plan: clientPlan });
+        } else {
+          logger.info('Cliente no encontrado en WispHub', { phone });
+        }
+      } catch (wispErr) {
+        logger.warn('No se pudo consultar WispHub para identificar cliente', { phone, error: wispErr.message });
+      }
     }
 
     // 3. Detectar intención para casos especiales
