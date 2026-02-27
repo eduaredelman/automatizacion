@@ -5,16 +5,43 @@ const logger = require('../utils/logger');
 
 const AMOUNT_TOLERANCE = 0.50;
 
-const processVoucher = async ({ conversationId, messageId, imagePath, clientPhone, aiVisionData = null }) => {
+// ─────────────────────────────────────────────────────────────
+// PASO 1: Guardar voucher como pendiente (sin validar aún)
+// Se llama cuando llega la imagen, ANTES de confirmar identidad
+// ─────────────────────────────────────────────────────────────
+const savePendingVoucher = async ({ conversationId, messageId, imagePath, aiVisionData }) => {
   const voucherUrl = '/uploads/' + path.basename(imagePath);
-
-  // Create pending payment record
-  const { rows: [paymentRow] } = await query(
-    `INSERT INTO payments (conversation_id, message_id, voucher_path, voucher_url, status)
-     VALUES ($1, $2, $3, $4, 'pending') RETURNING *`,
-    [conversationId, messageId, imagePath, voucherUrl]
+  const { rows: [row] } = await query(
+    `INSERT INTO payments (
+       conversation_id, message_id, voucher_path, voucher_url, status,
+       payment_method, amount, currency, operation_code, payment_date,
+       payer_name, ocr_confidence, ocr_raw
+     ) VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10,$11,$12)
+     RETURNING id`,
+    [
+      conversationId, messageId, imagePath, voucherUrl,
+      aiVisionData?.paymentMethod !== 'unknown' ? aiVisionData?.paymentMethod : null,
+      aiVisionData?.amount,
+      aiVisionData?.currency || 'PEN',
+      aiVisionData?.operationCode,
+      aiVisionData?.paymentDate,
+      aiVisionData?.payerName,
+      aiVisionData?.confidence,
+      JSON.stringify(aiVisionData || {}),
+    ]
   );
-  const paymentId = paymentRow.id;
+  return row.id;
+};
+
+// ─────────────────────────────────────────────────────────────
+// PASO 2: Validar y registrar pago en WispHub
+// Se llama DESPUÉS de confirmar identidad del cliente
+// ─────────────────────────────────────────────────────────────
+const finalizePendingVoucher = async (paymentId, clientPhone) => {
+  const { rows: [pmtRow] } = await query('SELECT * FROM payments WHERE id = $1', [paymentId]);
+  if (!pmtRow) throw new Error(`Payment ${paymentId} not found`);
+
+  const aiVisionData = pmtRow.ocr_raw ? JSON.parse(pmtRow.ocr_raw) : null;
 
   const updatePayment = (fields) => {
     const keys = Object.keys(fields);
@@ -24,45 +51,19 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
   };
 
   try {
-    // 1. AI Vision es la única fuente de verdad (OCR stub eliminado)
     if (!aiVisionData || !aiVisionData.success) {
-      await updatePayment({
-        status: 'manual_review',
-        rejection_reason: 'No se pudo analizar el comprobante automáticamente. Un agente lo revisará.',
-        ocr_confidence: 'none',
-      });
+      await updatePayment({ status: 'manual_review', rejection_reason: 'No se pudo analizar el comprobante automáticamente.', ocr_confidence: 'none' });
       return { status: 'manual_review', paymentId };
     }
 
-    logger.info('AI Vision data received', {
-      confidence: aiVisionData.confidence,
-      amount: aiVisionData.amount,
-      method: aiVisionData.paymentMethod,
-    });
+    logger.info('AI Vision data received', { confidence: aiVisionData.confidence, amount: aiVisionData.amount });
 
-    // 2. Guardar datos de AI Vision en el registro
-    await updatePayment({
-      payment_method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : null,
-      amount: aiVisionData.amount,
-      currency: aiVisionData.currency || 'PEN',
-      operation_code: aiVisionData.operationCode,
-      payment_date: aiVisionData.paymentDate,
-      payer_name: aiVisionData.payerName,
-      ocr_confidence: aiVisionData.confidence,
-      ocr_raw: JSON.stringify(aiVisionData.rawData || {}),
-      status: 'processing',
-    });
-
-    // 3. Verificar monto extraído
     if (aiVisionData.amount === null || aiVisionData.amount === undefined) {
-      await updatePayment({
-        status: 'manual_review',
-        rejection_reason: 'No se pudo extraer el monto del comprobante. Un agente lo revisará.',
-      });
+      await updatePayment({ status: 'manual_review', rejection_reason: 'No se pudo extraer el monto del comprobante.' });
       return { status: 'manual_review', paymentId, aiVisionData };
     }
 
-    // 4. Detección de duplicados por código de operación
+    // Duplicate check
     if (aiVisionData.operationCode) {
       const dup = await query(
         `SELECT id FROM payments WHERE operation_code = $1 AND id != $2 AND status = 'validated'`,
@@ -70,27 +71,27 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       );
       if (dup.rows.length > 0) {
         await updatePayment({ status: 'duplicate', rejection_reason: `Código duplicado: ${aiVisionData.operationCode}` });
-        return { status: 'duplicate', paymentId, aiVisionData };
+        return { status: 'duplicate', paymentId };
       }
     }
 
-    // 5. Buscar cliente en WispHub
+    // WispHub client lookup
     const client = await wisphub.buscarCliente(clientPhone, aiVisionData.payerName);
     if (!client) {
       await updatePayment({ status: 'manual_review', rejection_reason: 'Cliente no encontrado en el sistema' });
-      return { status: 'client_not_found', paymentId, aiVisionData };
+      return { status: 'client_not_found', paymentId };
     }
 
     const clientId = client.id_servicio || client.id;
 
     await query(
       `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)
-       VALUES ($1, $2, $3, $4, NOW())
+       VALUES ($1,$2,$3,$4,NOW())
        ON CONFLICT (wisphub_id) DO UPDATE SET phone=$2, name=$3, service_id=$4, last_synced_at=NOW()`,
       [String(clientId), clientPhone, client.nombre || client.name || 'N/A', String(clientId)]
     );
 
-    // 6. Consultar deuda
+    // Debt check
     const debtInfo = await wisphub.consultarDeuda(clientId);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
@@ -99,7 +100,7 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       return { status: 'no_debt', paymentId, aiVisionData, debtInfo };
     }
 
-    // 7. Validar monto
+    // Amount validation
     const diff = Math.abs(aiVisionData.amount - debtInfo.monto_deuda);
     await updatePayment({ amount_difference: diff });
 
@@ -111,7 +112,7 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       return { status: 'amount_mismatch', paymentId, aiVisionData, debtInfo, difference: diff };
     }
 
-    // 8. Registrar pago en WispHub
+    // Register in WispHub
     const wispResult = await wisphub.registrarPago(clientId, {
       amount: aiVisionData.amount,
       date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
@@ -125,7 +126,6 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       });
     }
 
-    // 9. Marcar como validado
     await updatePayment({
       status: 'validated',
       registered_wisphub: true,
@@ -134,11 +134,11 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       validated_at: new Date().toISOString(),
     });
 
-    logger.info('Payment validated via AI Vision', { conversationId, amount: aiVisionData.amount, clientId });
+    logger.info('Payment validated', { paymentId, amount: aiVisionData.amount, clientId });
     return { status: 'success', paymentId, aiVisionData, debtInfo, wispResult };
 
   } catch (err) {
-    logger.error('Payment processing error', { conversationId, error: err.message });
+    logger.error('Payment finalization error', { paymentId, error: err.message });
     await updatePayment({
       status: 'manual_review',
       rejection_reason: `Error al procesar: ${err.message}`,
@@ -147,4 +147,13 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
   }
 };
 
-module.exports = { processVoucher };
+// ─────────────────────────────────────────────────────────────
+// Mantener compatibilidad: flujo completo en un solo paso
+// (usado cuando identidad ya está confirmada al llegar la imagen)
+// ─────────────────────────────────────────────────────────────
+const processVoucher = async ({ conversationId, messageId, imagePath, clientPhone, aiVisionData = null }) => {
+  const paymentId = await savePendingVoucher({ conversationId, messageId, imagePath, aiVisionData });
+  return finalizePendingVoucher(paymentId, clientPhone);
+};
+
+module.exports = { processVoucher, savePendingVoucher, finalizePendingVoucher };

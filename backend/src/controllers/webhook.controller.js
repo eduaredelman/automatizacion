@@ -28,7 +28,6 @@ const verify = (req, res) => {
 // ─────────────────────────────────────────────────────────────
 
 const receive = async (req, res) => {
-  // Responder a Meta INMEDIATAMENTE (timeout de 20s)
   res.status(200).json({ received: true });
 
   try {
@@ -38,10 +37,9 @@ const receive = async (req, res) => {
     const { phone, displayName, messageId, type, text, mediaId, mediaMime, mediaCaption } = parsed;
     logger.info('📱 Mensaje entrante', { phone, type, messageId });
 
-    // Marcar como leído
     await whatsapp.markAsRead(messageId).catch(() => {});
 
-    // ── Upsert conversación ────────────────────────────────────
+    // Upsert conversación
     const convResult = await query(
       `INSERT INTO conversations (phone, display_name, last_message, last_message_at, unread_count)
        VALUES ($1, $2, $3, NOW(), 1)
@@ -55,7 +53,7 @@ const receive = async (req, res) => {
     );
     const conversation = convResult.rows[0];
 
-    // ── Guardar mensaje entrante ───────────────────────────────
+    // Guardar mensaje entrante
     const msgResult = await query(
       `INSERT INTO messages
          (conversation_id, whatsapp_id, direction, sender_type, message_type, body, media_mime)
@@ -66,16 +64,16 @@ const receive = async (req, res) => {
     );
 
     const message = msgResult.rows[0];
-    if (!message) return; // Mensaje duplicado, ignorar
+    if (!message) return; // duplicado
 
-    // ── ¿Asesor en control? → no hacer nada (él responde) ─────
+    // ¿Asesor en control? → emitir al panel y no responder
     if (conversation.status === 'human') {
       logger.info('👨‍💼 Modo humano activo, bot pausado', { phone });
       await emitSocketEvent('new_message', { conversation, message });
       return;
     }
 
-    // ── Enrutar por tipo de mensaje ────────────────────────────
+    // Enrutar por tipo
     if (type === 'image' && mediaId) {
       await handleImageMessage({ conversation, message, phone, mediaId });
     } else if (type === 'text' && text) {
@@ -86,7 +84,6 @@ const receive = async (req, res) => {
       );
     }
 
-    // Emitir al panel web en tiempo real
     await emitSocketEvent('new_message', { conversation, message });
 
   } catch (err) {
@@ -100,66 +97,62 @@ const receive = async (req, res) => {
 
 const handleImageMessage = async ({ conversation, message, phone, mediaId }) => {
   try {
-    // 1. Acuse de recibo inmediato (sin mencionar IA ni análisis interno)
-    const clientName = conversation.display_name && conversation.display_name !== phone
-      ? conversation.display_name
-      : null;
-    const ackMsg = clientName
-      ? `Gracias ${clientName}, hemos recibido tu comprobante. Nuestro equipo lo validará en breve. ✅`
-      : 'Gracias, hemos recibido tu comprobante. Nuestro equipo lo validará en breve. ✅';
-    await whatsapp.sendTextMessage(phone, ackMsg);
-
-    // 2. Descargar imagen
+    // 1. Descargar imagen y actualizar mensaje
     const mediaInfo = await whatsapp.downloadMedia(mediaId);
-
-    // 3. Actualizar mensaje con ruta del archivo
+    const voucherUrl = '/uploads/' + require('path').basename(mediaInfo.path);
     await query(
       `UPDATE messages SET media_url = $1, media_filename = $2, media_size = $3 WHERE id = $4`,
       [mediaInfo.url, mediaInfo.filename, mediaInfo.size, message.id]
     );
 
-    // 4. Analizar con IA Vision PRIMERO (más preciso)
+    // 2. Analizar con IA Vision
     let visionResult = null;
     if (process.env.OPENAI_API_KEY) {
       visionResult = await ai.analyzeVoucherWithAI(mediaInfo.path);
     }
 
-    // 5. Si IA Vision dice que no es un comprobante válido (solo rechazar si tiene alta confianza)
+    // 3. Rechazar si claramente no es un comprobante (alta confianza)
     if (visionResult && !visionResult.is_valid_voucher && visionResult.confidence === 'high') {
-      const response = `❓ La imagen que enviaste no parece ser un comprobante de pago.
-
-Por favor envía la captura de tu pago realizado por:
-${getPaymentBlock()}
-
-¿Tienes dudas? Responde este mensaje y te ayudo. 😊`;
-
+      const response = `❓ La imagen que enviaste no parece ser un comprobante de pago.\n\nPor favor envía la captura de tu pago realizado por:\n${getPaymentBlock()}\n\n¿Tienes dudas? Responde este mensaje. 😊`;
       await whatsapp.sendTextMessage(phone, response);
       await saveOutboundMessage(conversation.id, response, 'bot');
       return;
     }
 
-    // 6. Procesar el voucher (OCR + WispHub)
-    const result = await payment.processVoucher({
+    // 4. Guardar registro de pago pendiente (sin procesar aún)
+    const paymentId = await payment.savePendingVoucher({
       conversationId: conversation.id,
       messageId: message.id,
       imagePath: mediaInfo.path,
-      clientPhone: phone,
-      // Pasar datos de IA si ya los tenemos (para enriquecer el OCR)
       aiVisionData: visionResult,
     });
 
-    // 7. Construir respuesta según resultado
+    // 5. Verificar si identidad ya fue confirmada en esta conversación
+    const identityConfirmed = !!conversation.client_id;
+
+    if (!identityConfirmed) {
+      // Pedir nombre antes de procesar el pago
+      await query(
+        `UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`,
+        [conversation.id]
+      );
+      const askMsg = `Hemos recibido tu comprobante. ✅\n\nPara registrar tu pago correctamente, ¿me confirmas tu *nombre completo* tal como está registrado en Fiber Perú?`;
+      await whatsapp.sendTextMessage(phone, askMsg);
+      await saveOutboundMessage(conversation.id, askMsg, 'bot');
+      return;
+    }
+
+    // 6. Identidad confirmada → finalizar pago
+    const result = await payment.finalizePendingVoucher(paymentId, phone);
     const responseText = buildPaymentResponse(result);
     await whatsapp.sendTextMessage(phone, responseText);
     await saveOutboundMessage(conversation.id, responseText, 'bot');
 
-    // 8. Si hay error → escalar a humano
     if (['manual_review', 'error', 'client_not_found'].includes(result.status)) {
       await escalateToHuman(conversation, `Pago requiere revisión: ${result.status}`);
     }
 
-    // 9. Log del evento
-    await logEvent(conversation.id, result.paymentId, 'payment_processed', result.status);
+    await logEvent(conversation.id, paymentId, 'payment_processed', result.status);
     await emitSocketEvent('payment_update', { conversationId: conversation.id, status: result.status });
 
   } catch (err) {
@@ -172,100 +165,220 @@ ${getPaymentBlock()}
 };
 
 // ─────────────────────────────────────────────────────────────
-// MANEJAR TEXTO (chatbot con IA)
+// CONFIRMAR IDENTIDAD
+// Se llama cuando bot_intent es 'awaiting_identity' o 'awaiting_payment_name'
 // ─────────────────────────────────────────────────────────────
 
-const handleTextMessage = async ({ conversation, message, phone, text }) => {
+const handleIdentityConfirmation = async ({ conversation, phone, text, mode }) => {
   try {
-    // 1. Obtener historial reciente para contexto
-    const historyResult = await query(
-      `SELECT sender_type, body FROM messages
-       WHERE conversation_id = $1
-         AND message_type = 'text'
-         AND body IS NOT NULL
-       ORDER BY created_at DESC
-       LIMIT 15`,
-      [conversation.id]
-    );
-    const history = historyResult.rows.reverse();
+    // Buscar cliente en WispHub por teléfono
+    const wispClient = await wisphub.buscarClientePorTelefono(phone);
 
-    // 2. Obtener info del cliente SIEMPRE desde WispHub (fuente de datos real y actualizada)
-    //    La BD local se usa solo como caché para sync/reportes, no como fuente principal
+    let nameMatches = false;
     let clientInfo = null;
-    try {
-      const wispClient = await wisphub.buscarClientePorTelefono(phone);
-      if (wispClient) {
-        const clientId = String(wispClient.id_servicio || wispClient.id);
+
+    if (wispClient) {
+      const wispName = wispClient.nombre || wispClient.name || '';
+
+      // Normalizar para comparación flexible (sin tildes, minúsculas)
+      const normalize = (s) => (s || '')
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, '')
+        .trim();
+
+      const inputWords = normalize(text).split(/\s+/).filter(w => w.length > 2);
+      const wispWords  = normalize(wispName).split(/\s+/).filter(w => w.length > 2);
+
+      // Al menos una palabra del nombre coincide
+      nameMatches = inputWords.length > 0 &&
+        inputWords.some(w => wispWords.some(ww => ww.includes(w) || w.includes(ww)));
+
+      if (nameMatches) {
+        const clientId   = String(wispClient.id_servicio || wispClient.id);
         const clientName = wispClient.nombre || wispClient.name || 'N/A';
         const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
 
-        // Actualizar caché local (no bloqueante)
-        query(
+        // Upsert en caché local
+        const clientRes = await query(
           `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
+           VALUES ($1,$2,$3,$4,$5,NOW())
            ON CONFLICT (wisphub_id) DO UPDATE
-             SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()`,
+             SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()
+           RETURNING id`,
           [clientId, phone, clientName, clientId, clientPlan]
-        ).catch(e => logger.warn('Cache local update failed', { error: e.message }));
+        );
 
-        // Actualizar display_name de la conversación con el nombre real de WispHub
-        query(
-          `UPDATE conversations SET display_name = $1 WHERE id = $2`,
-          [clientName, conversation.id]
-        ).catch(() => {});
+        // Vincular conversación al cliente y marcar identidad confirmada
+        await query(
+          `UPDATE conversations SET client_id = $1, display_name = $2, bot_intent = 'identity_ok' WHERE id = $3`,
+          [clientRes.rows[0].id, clientName, conversation.id]
+        );
 
-        clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
+        clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId, debt_amount: null };
 
-        // Consultar deuda en tiempo real desde WispHub
+        // Obtener deuda actual
         try {
           const debtInfo = await wisphub.consultarDeuda(clientId);
           clientInfo.debt_amount = debtInfo.monto_deuda;
           clientInfo.tiene_deuda = debtInfo.tiene_deuda;
-          logger.info('WispHub deuda resultado', {
-            phone,
-            pendientes: debtInfo.facturas?.length || 0,
-            monto: debtInfo.monto_deuda,
-          });
-        } catch (debtErr) {
-          logger.warn('No se pudo consultar deuda WispHub', { phone, error: debtErr.message });
-        }
+        } catch (e) { /* deuda opcional */ }
 
-        logger.info('Cliente identificado desde WispHub', { phone, name: clientName });
-      } else {
-        // Número NO registrado en WispHub → cliente potencial, ofrecer ventas
-        logger.info('Número no registrado en WispHub', { phone });
-        const response = `Hola, gracias por contactarnos. 😊\n\nTu número no está registrado como cliente activo de Fiber Peru.\n\nSi deseas conocer nuestros planes de internet:\n📱 Ventas: *940366709*\n🌐 fiber-peru.com`;
-        await whatsapp.sendTextMessage(phone, response);
-        await saveOutboundMessage(conversation.id, response, 'bot');
-        return;
-      }
-    } catch (wispErr) {
-      logger.warn('Error consultando WispHub, usando caché local como respaldo', { phone, error: wispErr.message });
-      // Fallback a BD local si WispHub no responde
-      const localClient = await query(
-        `SELECT cl.name, cl.plan, cl.debt_amount, cl.wisphub_id
-         FROM clients cl JOIN conversations c ON c.phone = cl.phone WHERE c.id = $1`,
-        [conversation.id]
-      );
-      if (localClient.rows.length) {
-        clientInfo = localClient.rows[0];
-        logger.info('Usando datos de caché local como fallback', { phone });
+        logger.info('Identidad confirmada', { phone, name: clientName });
       }
     }
 
-    // 3. Detectar intención para casos especiales
-    const intent = await ai.detectIntent(text, history);
-
-    // 4. Auto-escalar reclamos a humano
-    if (intent.intent === 'complaint' && intent.confidence > 0.6) {
-      await escalateToHuman(conversation, 'Reclamo detectado automáticamente');
-      const response = '😔 Lamento los inconvenientes. Un *asesor humano* revisará tu caso de inmediato. Por favor espera un momento. ⏳';
+    if (!nameMatches) {
+      // Nombre no coincide → pedir de nuevo
+      const response = `😔 No encontré ese nombre en el sistema para este número.\n\n¿Me confirmas tu *nombre completo* tal como aparece en tu contrato con Fiber Perú?\n_(Ejemplo: Juan García Pérez)_`;
       await whatsapp.sendTextMessage(phone, response);
       await saveOutboundMessage(conversation.id, response, 'bot');
       return;
     }
 
-    // 5. Si piden hablar con humano → escalar
+    // Identidad confirmada ✅
+    if (mode === 'payment') {
+      // Buscar el pago pendiente más reciente de esta conversación
+      const pending = await query(
+        `SELECT id FROM payments WHERE conversation_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
+        [conversation.id]
+      );
+
+      if (pending.rows.length) {
+        const result = await payment.finalizePendingVoucher(pending.rows[0].id, phone);
+        const responseText = buildPaymentResponse(result);
+        await whatsapp.sendTextMessage(phone, responseText);
+        await saveOutboundMessage(conversation.id, responseText, 'bot');
+
+        if (['manual_review', 'error', 'client_not_found'].includes(result.status)) {
+          await escalateToHuman(conversation, `Pago requiere revisión: ${result.status}`);
+        }
+        await logEvent(conversation.id, pending.rows[0].id, 'payment_processed', result.status);
+        await emitSocketEvent('payment_update', { conversationId: conversation.id, status: result.status });
+      } else {
+        const welcome = `¡Gracias ${clientInfo.name}! ✅ No encontré un comprobante pendiente. Si ya lo enviaste, nuestro equipo lo revisará pronto.`;
+        await whatsapp.sendTextMessage(phone, welcome);
+        await saveOutboundMessage(conversation.id, welcome, 'bot');
+      }
+    } else {
+      // Solo confirmación de identidad
+      const welcome = `¡Perfecto, ${clientInfo.name}! 😊 ¿En qué puedo ayudarte hoy?`;
+      await whatsapp.sendTextMessage(phone, welcome);
+      await saveOutboundMessage(conversation.id, welcome, 'bot');
+    }
+
+  } catch (err) {
+    logger.error('Error en confirmación de identidad', { phone, error: err.message });
+    const response = '😔 No pude verificar tu identidad en este momento. Te conectamos con un asesor.';
+    await whatsapp.sendTextMessage(phone, response).catch(() => {});
+    await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
+    await escalateToHuman(conversation, 'Error verificando identidad').catch(() => {});
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// MANEJAR TEXTO (chatbot con IA)
+// ─────────────────────────────────────────────────────────────
+
+const handleTextMessage = async ({ conversation, message, phone, text }) => {
+  try {
+    // 1. ¿Estamos esperando confirmación de nombre?
+    if (conversation.bot_intent === 'awaiting_identity') {
+      await handleIdentityConfirmation({ conversation, phone, text, mode: 'chat' });
+      return;
+    }
+    if (conversation.bot_intent === 'awaiting_payment_name') {
+      await handleIdentityConfirmation({ conversation, phone, text, mode: 'payment' });
+      return;
+    }
+
+    // 2. Historial para contexto de IA
+    const historyResult = await query(
+      `SELECT sender_type, body FROM messages
+       WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
+       ORDER BY created_at DESC LIMIT 15`,
+      [conversation.id]
+    );
+    const history = historyResult.rows.reverse();
+
+    // 3. SIEMPRE consultar WispHub como fuente principal
+    let clientInfo = null;
+    let wispClient = null;
+
+    try {
+      wispClient = await wisphub.buscarClientePorTelefono(phone);
+
+      if (wispClient) {
+        const clientId   = String(wispClient.id_servicio || wispClient.id);
+        const clientName = wispClient.nombre || wispClient.name || null;
+        const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+        // Actualizar caché local (no bloqueante)
+        query(
+          `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
+           VALUES ($1,$2,$3,$4,$5,NOW())
+           ON CONFLICT (wisphub_id) DO UPDATE
+             SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()`,
+          [clientId, phone, clientName || 'N/A', clientId, clientPlan]
+        ).catch(e => logger.warn('Cache update failed', { error: e.message }));
+
+        clientInfo = { name: clientName, plan: clientPlan, debt_amount: null, wisphub_id: clientId };
+
+        // Obtener deuda en tiempo real
+        try {
+          const debtInfo = await wisphub.consultarDeuda(clientId);
+          clientInfo.debt_amount = debtInfo.monto_deuda;
+          clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+          logger.info('WispHub deuda resultado', { phone, tiene_deuda: debtInfo.tiene_deuda, monto: debtInfo.monto_deuda });
+        } catch (debtErr) {
+          logger.warn('No se pudo consultar deuda', { phone, error: debtErr.message });
+        }
+
+      } else {
+        // No registrado en WispHub
+        logger.info('Número no registrado en WispHub', { phone });
+
+        // Si identidad no confirmada → pedir nombre y dirección para buscar
+        if (!conversation.client_id) {
+          await query(`UPDATE conversations SET bot_intent = 'awaiting_identity' WHERE id = $1`, [conversation.id]);
+          const response = `Hola, gracias por contactarte con *Fiber Perú*. 😊\n\nTu número no figura en nuestro sistema. Para poder ayudarte, ¿me indicas tu *nombre completo* y *dirección o referencia* de instalación?`;
+          await whatsapp.sendTextMessage(phone, response);
+          await saveOutboundMessage(conversation.id, response, 'bot');
+          return;
+        }
+        // Si ya estaba confirmado antes (número puede haberse cambiado), seguir con IA
+      }
+    } catch (wispErr) {
+      logger.warn('WispHub no disponible, usando caché local', { phone, error: wispErr.message });
+      // Fallback a BD local
+      const local = await query(
+        `SELECT cl.name, cl.plan, cl.debt_amount, cl.wisphub_id
+         FROM clients cl JOIN conversations c ON c.phone = cl.phone WHERE c.id = $1`,
+        [conversation.id]
+      );
+      if (local.rows.length) {
+        clientInfo = local.rows[0];
+        logger.info('Usando datos de caché local', { phone });
+      }
+    }
+
+    // 4. ¿Identidad confirmada? (conversation.client_id existe)
+    const identityConfirmed = !!conversation.client_id;
+
+    if (wispClient && !identityConfirmed) {
+      // Cliente existe en WispHub pero aún no confirmó su nombre
+      // Actualizar display_name con el nombre real de WispHub
+      if (clientInfo?.name && clientInfo.name !== 'N/A') {
+        query(`UPDATE conversations SET display_name = $1 WHERE id = $2`, [clientInfo.name, conversation.id]).catch(() => {});
+      }
+      await query(`UPDATE conversations SET bot_intent = 'awaiting_identity' WHERE id = $1`, [conversation.id]);
+      const response = `Hola, soy el asistente de *Fiber Perú*. 😊\n\nPara brindarte el mejor servicio, ¿me confirmas tu *nombre completo* tal como está registrado en el sistema?`;
+      await whatsapp.sendTextMessage(phone, response);
+      await saveOutboundMessage(conversation.id, response, 'bot');
+      return;
+    }
+
+    // 5. Pide hablar con humano
     const quiereHumano = /asesor|agente|humano|persona|hablar con alguien|no entiendo/i.test(text);
     if (quiereHumano) {
       await escalateToHuman(conversation, 'Cliente solicitó asesor humano');
@@ -275,18 +388,32 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       return;
     }
 
-    // 6. Generar respuesta con IA conversacional (GPT-4o)
-    const aiResponse = await ai.generateConversationalResponse(text, history, clientInfo);
+    // 6. Detectar intención
+    const intent = await ai.detectIntent(text, history);
 
+    // 7. Auto-escalar reclamos
+    if (intent.intent === 'complaint' && intent.confidence > 0.6) {
+      await escalateToHuman(conversation, 'Reclamo detectado automáticamente');
+      const response = '😔 Lamento los inconvenientes. Un *asesor humano* revisará tu caso de inmediato. Por favor espera un momento. ⏳';
+      await whatsapp.sendTextMessage(phone, response);
+      await saveOutboundMessage(conversation.id, response, 'bot');
+      return;
+    }
+
+    // 8. Generar respuesta con IA conversacional
+    const aiResponse = await ai.generateConversationalResponse(text, history, clientInfo);
     await whatsapp.sendTextMessage(phone, aiResponse.text);
     await saveOutboundMessage(conversation.id, aiResponse.text, 'bot');
 
-    // 7. Actualizar intención en conversación
+    // 9. Actualizar intención (preservar identity_ok si ya estaba confirmado)
     await query(
-      `UPDATE conversations SET bot_intent = $1, last_message = $2, last_message_at = NOW() WHERE id = $3`,
+      `UPDATE conversations SET
+         bot_intent = CASE WHEN client_id IS NOT NULL THEN 'identity_ok' ELSE $1 END,
+         last_message = $2,
+         last_message_at = NOW()
+       WHERE id = $3`,
       [intent.intent, aiResponse.text.substring(0, 100), conversation.id]
     );
-
     await logEvent(conversation.id, null, 'intent_detected', intent.intent);
 
   } catch (err) {
@@ -301,51 +428,30 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
 // ─────────────────────────────────────────────────────────────
 
 const buildPaymentResponse = (result) => {
-  const ocr = result.ocrResult || {};
-  const debt = result.debtInfo || {};
+  const aiData = result.aiVisionData || result.ocrResult || {};
+  const debt   = result.debtInfo || {};
 
   switch (result.status) {
     case 'success':
-      return `✅ *¡Pago registrado exitosamente!*
-
-💰 Monto: *S/ ${ocr.amount || 'N/A'}*
-🏦 Medio: ${ocr.paymentMethod || 'N/A'}
-🔖 Operación: \`${ocr.operationCode || 'N/A'}\`
-
-Tu servicio está activo. ¡Gracias por tu pago! 🙏`;
+      return `✅ *Pago registrado exitosamente*\n\n💰 Monto: S/ ${aiData.amount}\n📅 Fecha: ${aiData.paymentDate || 'hoy'}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nTu servicio ha sido actualizado. ¡Gracias por pagar con Fiber Perú! 🎉`;
 
     case 'duplicate':
-      return `⚠️ *Comprobante ya registrado*
-
-Este comprobante ya fue procesado anteriormente.
-
-Si crees que es un error, comunícate con soporte: *932258382*`;
+      return `⚠️ *Comprobante ya registrado*\n\nEste comprobante ya fue procesado anteriormente.\n\nSi crees que es un error, comunícate con soporte: *932258382*`;
 
     case 'unreadable':
-      return `📸 La imagen no está clara. Por favor toma la foto con buena iluminación y que se vea el monto y el número de operación.
-
-Intenta de nuevo. 🔄`;
+      return `📸 La imagen no está clara. Por favor toma la foto con buena iluminación y que se vea el monto y el número de operación.\n\nIntenta de nuevo. 🔄`;
 
     case 'client_not_found':
-      return `No encontramos tu número registrado como cliente de Fiber Peru.
-
-Si ya tienes contrato, comunícate con soporte: *932258382*
-Si deseas contratar el servicio: *940366709* 😊`;
+      return `No encontramos tu número registrado como cliente de Fiber Perú.\n\nSi ya tienes contrato: *932258382*\nSi deseas contratar: *940366709* 😊`;
 
     case 'amount_mismatch':
-      return `⚠️ El monto del comprobante (*S/ ${ocr.amount || 'N/A'}*) no coincide con tu deuda pendiente (*S/ ${debt.monto_deuda || 'N/A'}*).
-
-Un asesor revisará tu caso: *932258382*`;
+      return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide con tu deuda pendiente (*S/ ${debt.monto_deuda || 'N/A'}*).\n\nUn asesor revisará tu caso: *932258382*`;
 
     case 'no_debt':
-      return `✅ Tu cuenta está al día, no tienes deuda pendiente en este momento.
-
-¿Tienes otra consulta? Comunícate con soporte: *932258382* 😊`;
+      return `✅ Tu cuenta está al día, no tienes deuda pendiente en este momento.\n\n¿Tienes otra consulta? *932258382* 😊`;
 
     case 'manual_review':
-      return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅
-
-¿Consultas? *932258382*`;
+      return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅\n\n¿Consultas? *932258382*`;
 
     default:
       return `Ocurrió un problema con tu comprobante. Por favor comunícate con soporte: *932258382* 👨‍💼`;
@@ -378,7 +484,6 @@ const saveOutboundMessage = async (conversationId, body, senderType) => {
   );
   const msg = result.rows[0];
   if (msg) {
-    // Obtener conversación completa para que el panel muestre todos los campos
     const convRes = await query('SELECT * FROM conversations WHERE id = $1', [conversationId]);
     const conversation = convRes.rows[0] || { id: conversationId };
     await emitSocketEvent('new_message', { conversation, message: msg });
@@ -398,8 +503,6 @@ const emitSocketEvent = async (event, data) => {
   try {
     const { emitToAgents, emitToConversation } = require('../config/socket');
     emitToAgents(event, data);
-    // También emitir el mensaje a la sala de la conversación para
-    // que ChatWindow lo reciba en tiempo real sin depender del layout
     if (event === 'new_message' && data.message?.conversation_id) {
       emitToConversation(data.message.conversation_id, 'message', data.message);
     }
