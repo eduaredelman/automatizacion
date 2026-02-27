@@ -184,7 +184,7 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
         {/* Avatar */}
         <div className="relative">
           <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-600 flex items-center justify-center text-white font-semibold">
-            {(conversation.display_name || conversation.phone).charAt(0).toUpperCase()}
+            {(conversation.display_name || conversation.phone || '?').charAt(0).toUpperCase()}
           </div>
           <span className={clsx(
             'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0d1424]',

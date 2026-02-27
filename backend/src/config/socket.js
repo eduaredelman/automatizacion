@@ -12,8 +12,8 @@ const initSocket = (httpServer) => {
       credentials: false,
     },
     transports: ['polling', 'websocket'],
-    pingInterval: 10000,
-    pingTimeout: 20000,
+    pingInterval: 25000,
+    pingTimeout: 60000,
     upgradeTimeout: 30000,
   });
 

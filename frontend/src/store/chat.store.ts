@@ -86,8 +86,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   prependConversation: (conv) => {
     set((state) => {
+      const existing = state.conversations.find((c) => c.id === conv.id);
+      // Merge con datos existentes para no perder campos si conv llega incompleto
+      const merged = existing ? { ...existing, ...conv } : conv;
       const filtered = state.conversations.filter((c) => c.id !== conv.id);
-      return { conversations: [conv, ...filtered] };
+      return { conversations: [merged, ...filtered] };
     });
     get().computeUnread();
   },

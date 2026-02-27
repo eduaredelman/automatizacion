@@ -399,8 +399,10 @@ const saveOutboundMessage = async (conversationId, body, senderType) => {
   );
   const msg = result.rows[0];
   if (msg) {
-    // Emitir en tiempo real para que el agente vea la respuesta del bot sin refrescar
-    await emitSocketEvent('new_message', { conversation: { id: conversationId }, message: msg });
+    // Obtener conversación completa para que el panel muestre todos los campos
+    const convRes = await query('SELECT * FROM conversations WHERE id = $1', [conversationId]);
+    const conversation = convRes.rows[0] || { id: conversationId };
+    await emitSocketEvent('new_message', { conversation, message: msg });
   }
   return result;
 };

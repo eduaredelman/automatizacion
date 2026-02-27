@@ -124,7 +124,7 @@ export default function ChatList({
                   {/* Avatar */}
                   <div className="relative shrink-0">
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-700 to-slate-600 flex items-center justify-center text-white font-semibold text-sm">
-                      {(conv.display_name || conv.phone).charAt(0).toUpperCase()}
+                      {(conv.display_name || conv.phone || '?').charAt(0).toUpperCase()}
                     </div>
                     {/* Status dot */}
                     <span className={clsx('absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0d1424]', cfg.dot)} />
