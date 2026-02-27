@@ -189,88 +189,67 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     );
     const history = historyResult.rows.reverse();
 
-    // 2. Obtener info del cliente — primero BD local, si no hay → WispHub
+    // 2. Obtener info del cliente SIEMPRE desde WispHub (fuente de datos real y actualizada)
+    //    La BD local se usa solo como caché para sync/reportes, no como fuente principal
     let clientInfo = null;
-    const clientResult = await query(
-      `SELECT cl.name, cl.plan, cl.debt_amount
-       FROM clients cl
-       JOIN conversations c ON c.phone = cl.phone
-       WHERE c.id = $1`,
-      [conversation.id]
-    );
-    if (clientResult.rows.length) {
-      clientInfo = clientResult.rows[0];
-      // Refrescar deuda real desde WispHub (la BD local puede estar desactualizada)
-      try {
-        const localClient = await query(
-          `SELECT wisphub_id FROM clients cl JOIN conversations c ON c.phone = cl.phone WHERE c.id = $1`,
-          [conversation.id]
-        );
-        if (localClient.rows[0]?.wisphub_id) {
-          const debtInfo = await wisphub.consultarDeuda(localClient.rows[0].wisphub_id);
+    try {
+      const wispClient = await wisphub.buscarClientePorTelefono(phone);
+      if (wispClient) {
+        const clientId = String(wispClient.id_servicio || wispClient.id);
+        const clientName = wispClient.nombre || wispClient.name || 'N/A';
+        const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+        // Actualizar caché local (no bloqueante)
+        query(
+          `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (wisphub_id) DO UPDATE
+             SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()`,
+          [clientId, phone, clientName, clientId, clientPlan]
+        ).catch(e => logger.warn('Cache local update failed', { error: e.message }));
+
+        // Actualizar display_name de la conversación con el nombre real de WispHub
+        query(
+          `UPDATE conversations SET display_name = $1 WHERE id = $2`,
+          [clientName, conversation.id]
+        ).catch(() => {});
+
+        clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
+
+        // Consultar deuda en tiempo real desde WispHub
+        try {
+          const debtInfo = await wisphub.consultarDeuda(clientId);
           clientInfo.debt_amount = debtInfo.monto_deuda;
           clientInfo.tiene_deuda = debtInfo.tiene_deuda;
-          logger.info('Deuda WispHub refrescada (cliente local)', {
+          logger.info('WispHub deuda resultado', {
             phone,
-            tiene_deuda: debtInfo.tiene_deuda,
+            pendientes: debtInfo.facturas?.length || 0,
             monto: debtInfo.monto_deuda,
           });
+        } catch (debtErr) {
+          logger.warn('No se pudo consultar deuda WispHub', { phone, error: debtErr.message });
         }
-      } catch (debtErr) {
-        logger.warn('No se pudo refrescar deuda del cliente local', { phone, error: debtErr.message });
+
+        logger.info('Cliente identificado desde WispHub', { phone, name: clientName });
+      } else {
+        // Número NO registrado en WispHub → cliente potencial, ofrecer ventas
+        logger.info('Número no registrado en WispHub', { phone });
+        const response = `Hola, gracias por contactarnos. 😊\n\nTu número no está registrado como cliente activo de Fiber Peru.\n\nSi deseas conocer nuestros planes de internet:\n📱 Ventas: *940366709*\n🌐 fiber-peru.com`;
+        await whatsapp.sendTextMessage(phone, response);
+        await saveOutboundMessage(conversation.id, response, 'bot');
+        return;
       }
-    } else {
-      // Cliente no sincronizado aún → buscar en WispHub al vuelo
-      try {
-        const wispClient = await wisphub.buscarClientePorTelefono(phone);
-        if (wispClient) {
-          const clientId = String(wispClient.id_servicio || wispClient.id);
-          const clientName = wispClient.nombre || wispClient.name || 'N/A';
-          const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
-
-          // Guardar en BD local para próximas interacciones
-          await query(
-            `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
-             VALUES ($1, $2, $3, $4, $5, NOW())
-             ON CONFLICT (wisphub_id) DO UPDATE
-               SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()`,
-            [clientId, phone, clientName, clientId, clientPlan]
-          );
-
-          // Actualizar nombre real en la conversación (reemplaza el display name de WhatsApp)
-          await query(
-            `UPDATE conversations SET display_name = $1 WHERE id = $2`,
-            [clientName, conversation.id]
-          );
-
-          clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
-
-          // Consultar deuda real en WispHub (no usar la BD local que puede estar desactualizada)
-          try {
-            const debtInfo = await wisphub.consultarDeuda(clientId);
-            clientInfo.debt_amount = debtInfo.monto_deuda;
-            clientInfo.tiene_deuda = debtInfo.tiene_deuda;
-            logger.info('Deuda WispHub consultada en vivo', {
-              phone,
-              tiene_deuda: debtInfo.tiene_deuda,
-              monto: debtInfo.monto_deuda,
-              facturas_pendientes: debtInfo.facturas?.length || 0,
-            });
-          } catch (debtErr) {
-            logger.warn('No se pudo consultar deuda en vivo', { phone, error: debtErr.message });
-          }
-
-          logger.info('Cliente identificado desde WispHub', { phone, name: clientName, plan: clientPlan });
-        } else {
-          // Número NO registrado en WispHub → cliente potencial, ofrecer ventas
-          logger.info('Número no registrado en WispHub, ofreciendo ventas', { phone });
-          const response = `Hola, gracias por contactarnos. 😊\n\nTu número no está registrado como cliente de Fiber Peru.\n\nSi deseas conocer nuestros planes de internet, comunícate con ventas:\n📱 *940366709*\n🌐 fiber-peru.com`;
-          await whatsapp.sendTextMessage(phone, response);
-          await saveOutboundMessage(conversation.id, response, 'bot');
-          return;
-        }
-      } catch (wispErr) {
-        logger.warn('No se pudo consultar WispHub para identificar cliente', { phone, error: wispErr.message });
+    } catch (wispErr) {
+      logger.warn('Error consultando WispHub, usando caché local como respaldo', { phone, error: wispErr.message });
+      // Fallback a BD local si WispHub no responde
+      const localClient = await query(
+        `SELECT cl.name, cl.plan, cl.debt_amount, cl.wisphub_id
+         FROM clients cl JOIN conversations c ON c.phone = cl.phone WHERE c.id = $1`,
+        [conversation.id]
+      );
+      if (localClient.rows.length) {
+        clientInfo = localClient.rows[0];
+        logger.info('Usando datos de caché local como fallback', { phone });
       }
     }
 
