@@ -56,14 +56,20 @@ const webhookLimiter = rateLimit({
 app.use('/webhook', webhookLimiter);
 
 // ── Body Parsing ───────────────────────────────────────────
-// Capture raw body for webhook signature verification
-app.use('/webhook', (req, res, next) => {
-  let data = '';
-  req.on('data', chunk => { data += chunk; });
-  req.on('end', () => { req.rawBody = data; next(); });
+// Webhook: capturar raw body para verificación de firma Meta
+app.use('/webhook', express.raw({ type: '*/*', limit: '10mb' }), (req, res, next) => {
+  if (Buffer.isBuffer(req.body)) {
+    req.rawBody = req.body.toString('utf8');
+    try { req.body = JSON.parse(req.rawBody); } catch { req.body = {}; }
+  }
+  next();
 });
 
-app.use(express.json({ limit: '10mb' }));
+// Resto de rutas usan JSON normal
+app.use((req, res, next) => {
+  if (req.path.startsWith('/webhook')) return next();
+  express.json({ limit: '10mb' })(req, res, next);
+});
 app.use(express.urlencoded({ extended: true }));
 
 // ── Logging ────────────────────────────────────────────────
