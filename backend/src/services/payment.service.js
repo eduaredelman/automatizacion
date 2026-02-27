@@ -1,3 +1,4 @@
+const path = require('path');
 const { query } = require('../config/database');
 const wisphub = require('./wisphub.service');
 const ocr = require('./ocr.service');
@@ -6,11 +7,14 @@ const logger = require('../utils/logger');
 const AMOUNT_TOLERANCE = 0.50;
 
 const processVoucher = async ({ conversationId, messageId, imagePath, clientPhone, aiVisionData = null }) => {
+  // Derivar la URL pública del archivo (para mostrar en el CRM)
+  const voucherUrl = '/uploads/' + path.basename(imagePath);
+
   // Create pending payment record
   const { rows: [paymentRow] } = await query(
-    `INSERT INTO payments (conversation_id, message_id, voucher_path, status)
-     VALUES ($1, $2, $3, 'pending') RETURNING *`,
-    [conversationId, messageId, imagePath]
+    `INSERT INTO payments (conversation_id, message_id, voucher_path, voucher_url, status)
+     VALUES ($1, $2, $3, $4, 'pending') RETURNING *`,
+    [conversationId, messageId, imagePath, voucherUrl]
   );
   const paymentId = paymentRow.id;
 

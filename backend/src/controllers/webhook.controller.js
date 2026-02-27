@@ -200,6 +200,25 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     );
     if (clientResult.rows.length) {
       clientInfo = clientResult.rows[0];
+      // Refrescar deuda real desde WispHub (la BD local puede estar desactualizada)
+      try {
+        const localClient = await query(
+          `SELECT wisphub_id FROM clients cl JOIN conversations c ON c.phone = cl.phone WHERE c.id = $1`,
+          [conversation.id]
+        );
+        if (localClient.rows[0]?.wisphub_id) {
+          const debtInfo = await wisphub.consultarDeuda(localClient.rows[0].wisphub_id);
+          clientInfo.debt_amount = debtInfo.monto_deuda;
+          clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+          logger.info('Deuda WispHub refrescada (cliente local)', {
+            phone,
+            tiene_deuda: debtInfo.tiene_deuda,
+            monto: debtInfo.monto_deuda,
+          });
+        }
+      } catch (debtErr) {
+        logger.warn('No se pudo refrescar deuda del cliente local', { phone, error: debtErr.message });
+      }
     } else {
       // Cliente no sincronizado aún → buscar en WispHub al vuelo
       try {
@@ -225,6 +244,22 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           );
 
           clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
+
+          // Consultar deuda real en WispHub (no usar la BD local que puede estar desactualizada)
+          try {
+            const debtInfo = await wisphub.consultarDeuda(clientId);
+            clientInfo.debt_amount = debtInfo.monto_deuda;
+            clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+            logger.info('Deuda WispHub consultada en vivo', {
+              phone,
+              tiene_deuda: debtInfo.tiene_deuda,
+              monto: debtInfo.monto_deuda,
+              facturas_pendientes: debtInfo.facturas?.length || 0,
+            });
+          } catch (debtErr) {
+            logger.warn('No se pudo consultar deuda en vivo', { phone, error: debtErr.message });
+          }
+
           logger.info('Cliente identificado desde WispHub', { phone, name: clientName, plan: clientPlan });
         } else {
           // Número NO registrado en WispHub → cliente potencial, ofrecer ventas

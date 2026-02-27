@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import api from '@/lib/api';
 import { useChatStore } from '@/store/chat.store';
 import ChatList from '@/components/ChatList';
@@ -11,6 +11,8 @@ export default function ChatsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Guardar la última conversación activa vista para que no desaparezca al refrescar la lista
+  const lastActiveRef = useRef<(typeof conversations)[0] | null>(null);
 
   const loadChats = useCallback(async () => {
     try {
@@ -35,7 +37,12 @@ export default function ChatsPage() {
     return () => clearInterval(interval);
   }, [loadChats]);
 
-  const activeConversation = conversations.find(c => c.id === activeConversationId);
+  // Usar la conversación activa de la lista o la última conocida (evita que desaparezca al refrescar)
+  const foundConversation = conversations.find(c => c.id === activeConversationId);
+  const activeConversation = foundConversation ?? lastActiveRef.current ?? undefined;
+  useEffect(() => {
+    if (foundConversation) lastActiveRef.current = foundConversation;
+  }, [foundConversation]);
 
   return (
     <div className="h-full flex overflow-hidden">
