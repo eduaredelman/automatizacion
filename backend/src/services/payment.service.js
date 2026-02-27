@@ -1,13 +1,11 @@
 const path = require('path');
 const { query } = require('../config/database');
 const wisphub = require('./wisphub.service');
-const ocr = require('./ocr.service');
 const logger = require('../utils/logger');
 
 const AMOUNT_TOLERANCE = 0.50;
 
 const processVoucher = async ({ conversationId, messageId, imagePath, clientPhone, aiVisionData = null }) => {
-  // Derivar la URL pública del archivo (para mostrar en el CRM)
   const voucherUrl = '/uploads/' + path.basename(imagePath);
 
   // Create pending payment record
@@ -26,76 +24,65 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
   };
 
   try {
-    // 1. OCR + AI Vision Analysis
-    // Si ya tenemos datos de IA Vision (del webhook), úsalos como base
-    // Si el OCR da más datos, combinar ambos
-    let ocrResult = await ocr.analyzeVoucher(imagePath);
-
-    // Combinar: IA Vision gana en confianza, OCR puede complementar campos faltantes
-    if (aiVisionData && aiVisionData.success) {
-      const merged = {
-        success: true,
-        confidence: aiVisionData.confidence || ocrResult.confidence,
-        method: 'ai_vision+ocr',
-        paymentMethod: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : ocrResult.paymentMethod,
-        amount: aiVisionData.amount ?? ocrResult.amount,
-        currency: aiVisionData.currency || ocrResult.currency || 'PEN',
-        operationCode: aiVisionData.operationCode || ocrResult.operationCode,
-        paymentDate: aiVisionData.paymentDate || ocrResult.paymentDate,
-        paymentTime: aiVisionData.paymentTime || ocrResult.paymentTime,
-        payerName: aiVisionData.payerName || ocrResult.payerName,
-        phone: aiVisionData.phone || ocrResult.phone,
-        cardLast4: aiVisionData.cardLast4 || ocrResult.cardLast4,
-        rawData: { ai: aiVisionData.rawData, ocr: ocrResult.rawData },
-      };
-      ocrResult = merged;
-      logger.info('Using merged AI Vision + OCR result', { confidence: merged.confidence, amount: merged.amount });
+    // 1. AI Vision es la única fuente de verdad (OCR stub eliminado)
+    if (!aiVisionData || !aiVisionData.success) {
+      await updatePayment({
+        status: 'manual_review',
+        rejection_reason: 'No se pudo analizar el comprobante automáticamente. Un agente lo revisará.',
+        ocr_confidence: 'none',
+      });
+      return { status: 'manual_review', paymentId };
     }
 
-    if (!ocrResult.success || ocrResult.confidence === 'none') {
-      // Si no hay datos de IA Vision → el comprobante queda para revisión manual (no hay OCR automático)
-      const reason = aiVisionData ? 'No se pudo leer el comprobante claramente' : 'Sin procesamiento automático - revisión manual requerida';
-      const newStatus = aiVisionData ? 'rejected' : 'manual_review';
-      const retStatus = aiVisionData ? 'unreadable' : 'manual_review';
-      await updatePayment({ status: newStatus, rejection_reason: reason, ocr_confidence: 'none' });
-      return { status: retStatus, paymentId };
-    }
+    logger.info('AI Vision data received', {
+      confidence: aiVisionData.confidence,
+      amount: aiVisionData.amount,
+      method: aiVisionData.paymentMethod,
+    });
 
-    // 2. Store OCR data
+    // 2. Guardar datos de AI Vision en el registro
     await updatePayment({
-      payment_method: ocrResult.paymentMethod,
-      amount: ocrResult.amount,
-      currency: ocrResult.currency,
-      operation_code: ocrResult.operationCode,
-      payment_date: ocrResult.paymentDate,
-      payer_name: ocrResult.payerName,
-      ocr_confidence: ocrResult.confidence,
-      ocr_raw: JSON.stringify(ocrResult.rawData || {}),
+      payment_method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : null,
+      amount: aiVisionData.amount,
+      currency: aiVisionData.currency || 'PEN',
+      operation_code: aiVisionData.operationCode,
+      payment_date: aiVisionData.paymentDate,
+      payer_name: aiVisionData.payerName,
+      ocr_confidence: aiVisionData.confidence,
+      ocr_raw: JSON.stringify(aiVisionData.rawData || {}),
       status: 'processing',
     });
 
-    // 3. Duplicate check
-    if (ocrResult.operationCode) {
+    // 3. Verificar monto extraído
+    if (aiVisionData.amount === null || aiVisionData.amount === undefined) {
+      await updatePayment({
+        status: 'manual_review',
+        rejection_reason: 'No se pudo extraer el monto del comprobante. Un agente lo revisará.',
+      });
+      return { status: 'manual_review', paymentId, aiVisionData };
+    }
+
+    // 4. Detección de duplicados por código de operación
+    if (aiVisionData.operationCode) {
       const dup = await query(
         `SELECT id FROM payments WHERE operation_code = $1 AND id != $2 AND status = 'validated'`,
-        [ocrResult.operationCode, paymentId]
+        [aiVisionData.operationCode, paymentId]
       );
       if (dup.rows.length > 0) {
-        await updatePayment({ status: 'duplicate', rejection_reason: `Código duplicado: ${ocrResult.operationCode}` });
-        return { status: 'duplicate', paymentId, ocrResult };
+        await updatePayment({ status: 'duplicate', rejection_reason: `Código duplicado: ${aiVisionData.operationCode}` });
+        return { status: 'duplicate', paymentId, aiVisionData };
       }
     }
 
-    // 4. Find client in WispHub
-    const client = await wisphub.buscarCliente(clientPhone, ocrResult.payerName);
+    // 5. Buscar cliente en WispHub
+    const client = await wisphub.buscarCliente(clientPhone, aiVisionData.payerName);
     if (!client) {
       await updatePayment({ status: 'manual_review', rejection_reason: 'Cliente no encontrado en el sistema' });
-      return { status: 'client_not_found', paymentId, ocrResult };
+      return { status: 'client_not_found', paymentId, aiVisionData };
     }
 
     const clientId = client.id_servicio || client.id;
 
-    // Upsert client in local DB
     await query(
       `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)
        VALUES ($1, $2, $3, $4, NOW())
@@ -103,33 +90,33 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       [String(clientId), clientPhone, client.nombre || client.name || 'N/A', String(clientId)]
     );
 
-    // 5. Check debt
+    // 6. Consultar deuda
     const debtInfo = await wisphub.consultarDeuda(clientId);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
     if (!debtInfo.tiene_deuda) {
-      await updatePayment({ status: 'manual_review', rejection_reason: 'Sin facturas pendientes' });
-      return { status: 'no_debt', paymentId, ocrResult, debtInfo };
+      await updatePayment({ status: 'manual_review', rejection_reason: 'Sin facturas pendientes en el sistema' });
+      return { status: 'no_debt', paymentId, aiVisionData, debtInfo };
     }
 
-    // 6. Validate amount
-    const diff = Math.abs((ocrResult.amount || 0) - debtInfo.monto_deuda);
+    // 7. Validar monto
+    const diff = Math.abs(aiVisionData.amount - debtInfo.monto_deuda);
     await updatePayment({ amount_difference: diff });
 
     if (diff > AMOUNT_TOLERANCE) {
       await updatePayment({
         status: 'rejected',
-        rejection_reason: `Monto no coincide. Deuda: S/${debtInfo.monto_deuda}, Pagado: S/${ocrResult.amount}`,
+        rejection_reason: `Monto no coincide. Deuda: S/${debtInfo.monto_deuda}, Comprobante: S/${aiVisionData.amount}`,
       });
-      return { status: 'amount_mismatch', paymentId, ocrResult, debtInfo, difference: diff };
+      return { status: 'amount_mismatch', paymentId, aiVisionData, debtInfo, difference: diff };
     }
 
-    // 7. Register payment in WispHub
+    // 8. Registrar pago en WispHub
     const wispResult = await wisphub.registrarPago(clientId, {
-      amount: ocrResult.amount,
-      date: ocrResult.paymentDate || new Date().toISOString().split('T')[0],
-      method: ocrResult.paymentMethod,
-      operationCode: ocrResult.operationCode || `AUTO-${Date.now()}`,
+      amount: aiVisionData.amount,
+      date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
+      method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
+      operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
     });
 
     if (debtInfo.factura_id) {
@@ -138,7 +125,7 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       });
     }
 
-    // 8. Mark as validated
+    // 9. Marcar como validado
     await updatePayment({
       status: 'validated',
       registered_wisphub: true,
@@ -147,14 +134,14 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
       validated_at: new Date().toISOString(),
     });
 
-    logger.info('Payment validated', { conversationId, amount: ocrResult.amount, clientId });
-    return { status: 'success', paymentId, ocrResult, debtInfo, wispResult };
+    logger.info('Payment validated via AI Vision', { conversationId, amount: aiVisionData.amount, clientId });
+    return { status: 'success', paymentId, aiVisionData, debtInfo, wispResult };
 
   } catch (err) {
     logger.error('Payment processing error', { conversationId, error: err.message });
     await updatePayment({
       status: 'manual_review',
-      rejection_reason: `Error: ${err.message}`,
+      rejection_reason: `Error al procesar: ${err.message}`,
     }).catch(() => {});
     return { status: 'error', error: err.message, paymentId };
   }

@@ -2,6 +2,7 @@ const { query } = require('../config/database');
 const whatsapp = require('../services/whatsapp.service');
 const { success, error, paginated } = require('../utils/response');
 const logger = require('../utils/logger');
+const { emitToConversation, emitToAgents } = require('../config/socket');
 
 // GET /api/chats - List conversations
 const listChats = async (req, res) => {
@@ -65,13 +66,17 @@ const getChat = async (req, res) => {
       [id]
     );
 
+    // Carga los mensajes más recientes (DESC) y luego los re-ordena ASC para mostrar
+    // Esto evita que conversaciones largas solo muestren los primeros 50 mensajes (los más viejos)
     const messagesResult = await query(
-      `SELECT m.*, a.name AS agent_name
-       FROM messages m
-       LEFT JOIN agents a ON a.id = m.agent_id
-       WHERE m.conversation_id = $1
-       ORDER BY m.created_at ASC
-       LIMIT $2 OFFSET $3`,
+      `SELECT * FROM (
+         SELECT m.*, a.name AS agent_name
+         FROM messages m
+         LEFT JOIN agents a ON a.id = m.agent_id
+         WHERE m.conversation_id = $1
+         ORDER BY m.created_at DESC
+         LIMIT $2 OFFSET $3
+       ) sub ORDER BY created_at ASC`,
       [id, limit, offset]
     );
 
@@ -129,7 +134,17 @@ const sendMessage = async (req, res) => {
       [text.substring(0, 100), id]
     );
 
-    return success(res, msgResult.rows[0], 'Mensaje enviado');
+    // Incluir agent_name en el mensaje para que el panel lo muestre correctamente
+    const savedMsg = { ...msgResult.rows[0], agent_name: req.agent?.name };
+
+    // Emitir vía socket para que otros agentes vean el mensaje en tiempo real
+    emitToConversation(id, 'message', savedMsg);
+    emitToAgents('new_message', {
+      conversation: { ...conv, last_message: text.substring(0, 100), last_message_at: new Date().toISOString() },
+      message: savedMsg,
+    });
+
+    return success(res, savedMsg, 'Mensaje enviado');
   } catch (err) {
     logger.error('sendMessage error', { error: err.message });
     return error(res, 'Error al enviar mensaje');
