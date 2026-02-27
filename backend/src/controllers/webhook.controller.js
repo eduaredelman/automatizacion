@@ -46,7 +46,7 @@ const receive = async (req, res) => {
       `INSERT INTO conversations (phone, display_name, last_message, last_message_at, unread_count)
        VALUES ($1, $2, $3, NOW(), 1)
        ON CONFLICT (phone) DO UPDATE SET
-         display_name     = COALESCE(NULLIF(EXCLUDED.display_name, phone), conversations.display_name),
+         display_name     = COALESCE(NULLIF(EXCLUDED.display_name, EXCLUDED.phone), conversations.display_name),
          last_message     = EXCLUDED.last_message,
          last_message_at  = NOW(),
          unread_count     = conversations.unread_count + 1
