@@ -107,6 +107,8 @@ app.get('/health', async (req, res) => {
 
 // ── 404 ────────────────────────────────────────────────────
 app.use((req, res) => {
+  // Dejar pasar rutas de Socket.IO al handler de Socket.IO (que corre después de Express)
+  if (req.path.startsWith('/api/socket.io') || req.path.startsWith('/socket.io')) return;
   res.status(404).json({ success: false, message: 'Ruta no encontrada' });
 });
 
