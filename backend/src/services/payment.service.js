@@ -49,8 +49,12 @@ const processVoucher = async ({ conversationId, messageId, imagePath, clientPhon
     }
 
     if (!ocrResult.success || ocrResult.confidence === 'none') {
-      await updatePayment({ status: 'rejected', rejection_reason: 'No se pudo leer el comprobante', ocr_confidence: 'none' });
-      return { status: 'unreadable', paymentId };
+      // Si no hay datos de IA Vision → el comprobante queda para revisión manual (no hay OCR automático)
+      const reason = aiVisionData ? 'No se pudo leer el comprobante claramente' : 'Sin procesamiento automático - revisión manual requerida';
+      const newStatus = aiVisionData ? 'rejected' : 'manual_review';
+      const retStatus = aiVisionData ? 'unreadable' : 'manual_review';
+      await updatePayment({ status: newStatus, rejection_reason: reason, ocr_confidence: 'none' });
+      return { status: retStatus, paymentId };
     }
 
     // 2. Store OCR data

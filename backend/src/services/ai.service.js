@@ -162,32 +162,41 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
 
   const { getPaymentBlock } = require('../config/payment-info');
 
-  const systemPrompt = `Eres un asistente virtual de FiberPeru, empresa de internet por fibra óptica en Perú.
-Tu nombre es "Fiber". Eres amigable, profesional, hablas en español peruano informal pero respetuoso.
-Siempre llama al cliente por su nombre si lo conoces.
+  const systemPrompt = `Eres el asistente automático oficial de Fiber Peru, empresa de internet por fibra óptica en Perú.
 
 ${clientContext}
 
-MÉTODOS DE PAGO FIBERPERU:
+MÉTODOS DE PAGO FIBER PERU:
 ${getPaymentBlock()}
 
-REGLAS:
-1. Saluda al cliente por su nombre si lo conoces
-2. Si preguntan cómo pagar → muestra los métodos de pago de arriba y pídeles la foto del comprobante
-3. Si tienen problemas de internet → da pasos básicos (reiniciar router, revisar cables), luego ofrece escalar a técnico
-4. Si están cortados (día 10+) → explica que deben pagar y enviar comprobante para reactivar
-5. Si el cliente está molesto → empatía y ofrece asesor humano
-6. Respuestas cortas y directas (máximo 4 líneas)
-7. Usa emojis con moderación (1-2 por mensaje)
-8. Nunca inventes precios, velocidades ni datos técnicos que no conoces
-9. Si no puedes ayudar → ofrece conectar con un asesor humano
+CONTACTOS IMPORTANTES:
+- Soporte técnico: *932258382* (WhatsApp/llamada)
+- Ventas y nuevos planes: *940366709* (WhatsApp/llamada)
+- Web: fiber-peru.com
 
-PUEDES AYUDAR CON:
-- Cómo y dónde pagar (Yape, Plin, BCP, Interbank)
-- Registro de pagos (el cliente envía foto del voucher)
-- Soporte técnico básico de conectividad
-- Estado del servicio y facturas
-- Escalar a asesor humano cuando sea necesario`;
+═══════════════════════════════
+REGLAS ESTRICTAS:
+═══════════════════════════════
+- Responde SOLO sobre servicios de Fiber Peru. Si preguntan otra cosa: "Solo puedo ayudarte con temas del servicio Fiber Peru. 😊"
+- NUNCA inventes nombres, montos ni datos. Solo usa lo que está en el sistema.
+- NUNCA menciones "análisis de imagen", "IA", "inteligencia artificial" ni procesos internos.
+- Respuestas cortas y claras (máximo 4 líneas).
+
+═══════════════════════════════
+FLUJO SEGÚN TIPO DE CLIENTE:
+═══════════════════════════════
+
+SI EL CLIENTE ESTÁ REGISTRADO EN EL SISTEMA (tiene nombre):
+1. Salúdalo SIEMPRE por su nombre: "Hola [Nombre], ..."
+2. Si no tiene deuda: "Hola [Nombre], tu servicio está activo y no tienes deuda pendiente. Gracias por confiar en Fiber Peru."
+3. Si tiene deuda: "Hola [Nombre], registramos un saldo pendiente de S/ [monto]. Puedes enviarnos tu comprobante de pago por este medio."
+4. Si pregunta por soporte técnico: brinda pasos básicos y da el número *932258382*
+5. Si envió comprobante: "Gracias [Nombre], hemos recibido tu comprobante. Nuestro equipo lo validará en breve."
+
+SI EL NÚMERO NO ESTÁ REGISTRADO (cliente potencial/nuevo):
+- No es cliente activo aún. Ofrécele los planes y datos de contacto de ventas.
+- Responde: "Hola, gracias por contactarnos. Por el momento tu número no está registrado como cliente de Fiber Peru. Si deseas conocer nuestros planes de internet, comunícate con ventas al *940366709* o visita fiber-peru.com 😊"
+- NO intentes registrarlo ni pedirle datos.`;
 
   if (!client) {
     // Fallback sin OpenAI
@@ -233,54 +242,52 @@ PUEDES AYUDAR CON:
 
 const getFallbackResponse = (intent) => {
   const RESPONSES = {
-    greeting: `¡Hola! 👋 Soy *Fiber*, tu asistente de FiberPeru.
+    greeting: `¡Hola! Soy el asistente de Fiber Peru. 😊
 
 ¿En qué puedo ayudarte?
-📸 Registrar pago → envía foto de tu voucher
-🔧 Soporte técnico
-📋 Consultar tu deuda
-👨‍💼 Hablar con un asesor`,
+• Consultar tu deuda
+• Registrar tu pago (envíanos el comprobante)
+• Soporte técnico: *932258382*
+• Planes y ventas: *940366709*`,
 
-    payment: `💳 Para registrar tu pago, envíame la *foto de tu comprobante* (Yape, Plin, BCP, etc.)
+    payment: `Para registrar tu pago, envíanos la foto de tu comprobante (Yape, Plin, BCP, Interbank). ✅
 
-Asegúrate que se vea claramente:
-✅ El monto
-✅ El número de operación
-✅ La fecha`,
+Asegúrate que se vea el monto, número de operación y fecha.`,
 
-    support: `🔧 Entiendo que tienes problemas con tu internet.
+    support: `Entiendo que tienes problemas con tu internet.
 
-Mientras reviso tu caso:
-1. ¿Las luces del router están encendidas?
-2. ¿Intentaste apagar y encender el router?
+Por favor intenta:
+1. Apagar y encender el router (espera 30 segundos)
+2. Verificar que los cables estén bien conectados
 
-Un técnico te contactará pronto. ⏱️`,
+Si el problema persiste, comunícate con soporte: *932258382* ⏱️`,
 
-    complaint: `😔 Lamento mucho los inconvenientes.
+    complaint: `Lamentamos los inconvenientes. 😔
 
-Tu caso fue escalado a un asesor humano que te atenderá de inmediato. Por favor espera un momento. ⏳`,
+Un asesor revisará tu caso. También puedes llamar a soporte: *932258382*`,
 
-    sales: `🚀 Nuestros planes de fibra óptica:
-• Básico: 50 Mbps – S/59/mes
-• Estándar: 100 Mbps – S/79/mes
-• Premium: 200 Mbps – S/99/mes
+    sales: `Para conocer nuestros planes de internet, comunícate con ventas: *940366709* 😊
 
-¿Te interesa? Un asesor te contactará. 😊`,
+O visita: fiber-peru.com`,
 
-    cut: `📵 Si tu servicio fue cortado, es por falta de pago.
+    cut: `Tu servicio fue suspendido por falta de pago.
 
 Para reactivarlo:
-1. Realiza tu pago (Yape, Plin, transferencia)
-2. Envíame la foto del comprobante
-3. Lo proceso al instante ✅`,
+1. Realiza tu pago (Yape, Plin, BCP, Interbank)
+2. Envíanos la foto del comprobante
+3. Nuestro equipo lo validará en breve ✅`,
 
-    unknown: `Hola 👋 Recibí tu mensaje.
+    not_client: `Hola, gracias por contactarnos.
+
+Tu número no está registrado como cliente de Fiber Peru. Si deseas conocer nuestros planes de internet, comunícate con ventas: *940366709* o visita fiber-peru.com 😊`,
+
+    unknown: `Hola, soy el asistente de Fiber Peru. Solo puedo ayudarte con temas del servicio. 😊
 
 ¿Qué necesitas?
-1️⃣ Registrar un pago
-2️⃣ Soporte técnico
-3️⃣ Información de planes
-4️⃣ Hablar con un asesor`,
+• Consultar tu deuda
+• Registrar un pago
+• Soporte técnico: *932258382*
+• Planes y ventas: *940366709*`,
   };
   return RESPONSES[intent] || RESPONSES.unknown;
 };

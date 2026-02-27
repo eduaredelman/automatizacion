@@ -149,7 +149,7 @@ export default function PaymentsPage() {
                     </td>
                     <td className="py-3.5 pr-4">
                       <span className="text-sm font-bold text-white">
-                        {p.amount ? `S/ ${p.amount.toFixed(2)}` : '—'}
+                        {p.amount != null ? `S/ ${parseFloat(String(p.amount)).toFixed(2)}` : '—'}
                       </span>
                     </td>
                     <td className="py-3.5 pr-4">

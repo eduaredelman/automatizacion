@@ -151,7 +151,7 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
               <div className="space-y-2">
                 {[
                   { icon: CreditCard, label: 'Medio de pago', value: METHOD_ICONS[payment.payment_method || ''] || payment.payment_method },
-                  { icon: DollarSign, label: 'Monto', value: payment.amount ? `S/ ${payment.amount.toFixed(2)}` : null },
+                  { icon: DollarSign, label: 'Monto', value: payment.amount != null ? `S/ ${parseFloat(String(payment.amount)).toFixed(2)}` : null },
                   { icon: Hash, label: 'Código operación', value: payment.operation_code, mono: true },
                   { icon: Calendar, label: 'Fecha pago', value: payment.payment_date },
                   { label: 'Nombre pagador', value: payment.payer_name },

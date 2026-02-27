@@ -44,7 +44,7 @@ export default function Sidebar({ onLogout }: SidebarProps) {
       <nav className="flex-1 p-3 space-y-1">
         {NAV.map(({ href, label, icon: Icon }) => {
           const isActive = pathname === href || pathname.startsWith(href + '/');
-          const hasUnread = href === '/chats' && unreadTotal > 0;
+          const hasUnread = href === '/dashboard/chats' && unreadTotal > 0;
 
           return (
             <Link key={href} href={href}>

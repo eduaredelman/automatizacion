@@ -100,10 +100,14 @@ const receive = async (req, res) => {
 
 const handleImageMessage = async ({ conversation, message, phone, mediaId }) => {
   try {
-    // 1. Acuse de recibo inmediato
-    await whatsapp.sendTextMessage(phone,
-      '📸 Recibí tu comprobante. Analizando con IA... ⏳'
-    );
+    // 1. Acuse de recibo inmediato (sin mencionar IA ni análisis interno)
+    const clientName = conversation.display_name && conversation.display_name !== phone
+      ? conversation.display_name
+      : null;
+    const ackMsg = clientName
+      ? `Gracias ${clientName}, hemos recibido tu comprobante. Nuestro equipo lo validará en breve. ✅`
+      : 'Gracias, hemos recibido tu comprobante. Nuestro equipo lo validará en breve. ✅';
+    await whatsapp.sendTextMessage(phone, ackMsg);
 
     // 2. Descargar imagen
     const mediaInfo = await whatsapp.downloadMedia(mediaId);
@@ -120,8 +124,8 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       visionResult = await ai.analyzeVoucherWithAI(mediaInfo.path);
     }
 
-    // 5. Si IA Vision dice que no es un comprobante válido
-    if (visionResult && !visionResult.is_valid_voucher) {
+    // 5. Si IA Vision dice que no es un comprobante válido (solo rechazar si tiene alta confianza)
+    if (visionResult && !visionResult.is_valid_voucher && visionResult.confidence === 'high') {
       const response = `❓ La imagen que enviaste no parece ser un comprobante de pago.
 
 Por favor envía la captura de tu pago realizado por:
@@ -160,7 +164,7 @@ ${getPaymentBlock()}
 
   } catch (err) {
     logger.error('❌ Error procesando imagen', { phone, error: err.message });
-    const errorMsg = '❌ Ocurrió un error procesando tu comprobante. Un asesor lo revisará y te contactará pronto.';
+    const errorMsg = 'Ocurrió un problema con tu comprobante. Nuestro equipo lo revisará pronto. También puedes contactar soporte: *932258382*';
     await whatsapp.sendTextMessage(phone, errorMsg).catch(() => {});
     await saveOutboundMessage(conversation.id, errorMsg, 'bot').catch(() => {});
     await escalateToHuman(conversation, 'Error procesando imagen').catch(() => {});
@@ -223,7 +227,12 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           clientInfo = { name: clientName, plan: clientPlan, debt_amount: null };
           logger.info('Cliente identificado desde WispHub', { phone, name: clientName, plan: clientPlan });
         } else {
-          logger.info('Cliente no encontrado en WispHub', { phone });
+          // Número NO registrado en WispHub → cliente potencial, ofrecer ventas
+          logger.info('Número no registrado en WispHub, ofreciendo ventas', { phone });
+          const response = `Hola, gracias por contactarnos. 😊\n\nTu número no está registrado como cliente de Fiber Peru.\n\nSi deseas conocer nuestros planes de internet, comunícate con ventas:\n📱 *940366709*\n🌐 fiber-peru.com`;
+          await whatsapp.sendTextMessage(phone, response);
+          await saveOutboundMessage(conversation.id, response, 'bot');
+          return;
         }
       } catch (wispErr) {
         logger.warn('No se pudo consultar WispHub para identificar cliente', { phone, error: wispErr.message });
@@ -288,66 +297,44 @@ const buildPaymentResponse = (result) => {
 💰 Monto: *S/ ${ocr.amount || 'N/A'}*
 🏦 Medio: ${ocr.paymentMethod || 'N/A'}
 🔖 Operación: \`${ocr.operationCode || 'N/A'}\`
-📅 Fecha: ${ocr.paymentDate || new Date().toLocaleDateString('es-PE')}
 
 Tu servicio está activo. ¡Gracias por tu pago! 🙏`;
 
     case 'duplicate':
       return `⚠️ *Comprobante ya registrado*
 
-El código de operación \`${ocr.operationCode}\` ya fue procesado anteriormente.
+Este comprobante ya fue procesado anteriormente.
 
-Si crees que es un error, un asesor te ayudará. 👨‍💼`;
+Si crees que es un error, comunícate con soporte: *932258382*`;
 
     case 'unreadable':
-      return `📸 *No pude leer el comprobante*
-
-La imagen no es suficientemente clara. Por favor:
-• Toma la foto con buena iluminación
-• Que el monto y código sean visibles
-• Sin sombras ni reflejos
+      return `📸 La imagen no está clara. Por favor toma la foto con buena iluminación y que se vea el monto y el número de operación.
 
 Intenta de nuevo. 🔄`;
 
     case 'client_not_found':
-      return `❓ *Cuenta no encontrada*
+      return `No encontramos tu número registrado como cliente de Fiber Peru.
 
-No encontré tu cuenta con este número de WhatsApp.
-
-Posibles soluciones:
-• Verifica que uses el número registrado en FiberPeru
-• Escríbenos tu nombre completo y DNI para buscarte
-
-Si ya pagaste, tu comprobante fue guardado y un asesor lo vinculará a tu cuenta. 👨‍💼`;
+Si ya tienes contrato, comunícate con soporte: *932258382*
+Si deseas contratar el servicio: *940366709* 😊`;
 
     case 'amount_mismatch':
-      return `⚠️ *Monto no coincide*
+      return `⚠️ El monto del comprobante (*S/ ${ocr.amount || 'N/A'}*) no coincide con tu deuda pendiente (*S/ ${debt.monto_deuda || 'N/A'}*).
 
-💰 Tu pago: *S/ ${ocr.amount || 'N/A'}*
-📋 Tu deuda actual: *S/ ${debt.monto_deuda || 'N/A'}*
-📊 Diferencia: S/ ${result.difference?.toFixed(2) || 'N/A'}
-
-Un asesor revisará tu caso. 👨‍💼`;
+Un asesor revisará tu caso: *932258382*`;
 
     case 'no_debt':
-      return `✅ *Sin deuda pendiente*
+      return `✅ Tu cuenta está al día, no tienes deuda pendiente en este momento.
 
-No encontré facturas pendientes en tu cuenta en este momento.
-
-¿Pagaste de más? ¿Tienes otra consulta? Responde este mensaje. 😊`;
+¿Tienes otra consulta? Comunícate con soporte: *932258382* 😊`;
 
     case 'manual_review':
-      return `🔍 *En revisión manual*
+      return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅
 
-Tu comprobante está siendo revisado por un asesor.
-Te confirmaremos el registro muy pronto. ⏳
-
-¿Tienes alguna consulta? Responde este mensaje.`;
+¿Consultas? *932258382*`;
 
     default:
-      return `❌ *Error al procesar*
-
-Ocurrió un problema con tu comprobante. Un asesor lo revisará y te contactará pronto. 👨‍💼`;
+      return `Ocurrió un problema con tu comprobante. Por favor comunícate con soporte: *932258382* 👨‍💼`;
   }
 };
 

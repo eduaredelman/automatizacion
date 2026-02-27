@@ -59,7 +59,7 @@ export default function DashboardPage() {
     {
       label: 'Pagos Validados',
       value: stats?.payments.total_validated || 0,
-      sub: `S/ ${(stats?.payments.total_amount || 0).toFixed(2)} total`,
+      sub: `S/ ${parseFloat(String(stats?.payments.total_amount || 0)).toFixed(2)} total`,
       icon: CheckCircle, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20',
     },
     {
