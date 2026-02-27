@@ -1,6 +1,9 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
+// Misma URL base que el API — en producción es el dominio público
+// y Next.js tiene el rewrite /api/:path* → http://backend:3001/api/:path*
+// El path /api/socket.io cruza por ese rewrite llegando al backend correctamente.
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 let socket: Socket | null = null;
 
@@ -12,11 +15,15 @@ export const getSocket = (): Socket | null => {
     if (!token) return null;
 
     socket = io(SOCKET_URL, {
+      path: '/api/socket.io',
       auth: { token },
-      transports: ['websocket', 'polling'],
+      // polling primero (funciona a través del rewrite de Next.js),
+      // luego intenta upgrade a WebSocket si NPM lo permite
+      transports: ['polling', 'websocket'],
       reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
+      reconnectionAttempts: Infinity,
     });
 
     socket.on('connect', () => {
@@ -43,7 +50,14 @@ export const disconnectSocket = () => {
 };
 
 export const joinConversation = (conversationId: string) => {
-  socket?.emit('join_conversation', conversationId);
+  const s = socket;
+  if (!s) return;
+  if (s.connected) {
+    s.emit('join_conversation', conversationId);
+  } else {
+    // Si aún no está conectado, esperar el evento connect para unirse
+    s.once('connect', () => s.emit('join_conversation', conversationId));
+  }
 };
 
 export const leaveConversation = (conversationId: string) => {

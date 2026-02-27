@@ -58,6 +58,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (msg) => {
     const { messages } = get();
     const existing = messages[msg.conversation_id] || [];
+    // Evitar duplicados: el layout (new_message) y el ChatWindow (message) pueden
+    // recibir el mismo mensaje si el agente está en la sala de la conversación
+    if (existing.some((m) => m.id === msg.id)) return;
     set({
       messages: {
         ...messages,

@@ -390,12 +390,19 @@ const escalateToHuman = async (conversation, reason = '') => {
   });
 };
 
-const saveOutboundMessage = (conversationId, body, senderType) => {
-  return query(
+const saveOutboundMessage = async (conversationId, body, senderType) => {
+  const result = await query(
     `INSERT INTO messages (conversation_id, direction, sender_type, message_type, body)
-     VALUES ($1, 'outbound', $2, 'text', $3)`,
+     VALUES ($1, 'outbound', $2, 'text', $3)
+     RETURNING *`,
     [conversationId, senderType, body]
   );
+  const msg = result.rows[0];
+  if (msg) {
+    // Emitir en tiempo real para que el agente vea la respuesta del bot sin refrescar
+    await emitSocketEvent('new_message', { conversation: { id: conversationId }, message: msg });
+  }
+  return result;
 };
 
 const logEvent = (conversationId, paymentId, eventType, description) => {

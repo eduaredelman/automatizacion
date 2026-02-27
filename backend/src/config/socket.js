@@ -6,14 +6,16 @@ let io;
 
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
+    // /api/socket.io → funciona a través del rewrite de Next.js (/api/:path* → backend)
+    // Esto evita que Next.js bloquee la conexión (Next.js no puede proxy WebSocket)
+    path: '/api/socket.io',
     cors: {
-      origin: (process.env.FRONTEND_URL || 'http://localhost:3000').split(','),
-      credentials: true,
+      origin: '*',
+      credentials: false,
     },
-    transports: ['websocket', 'polling'],
-    // Mantener la conexión viva a través de NPM/nginx
-    pingInterval: 10000,   // ping cada 10 segundos
-    pingTimeout: 20000,    // esperar 20s antes de cerrar
+    transports: ['polling', 'websocket'],
+    pingInterval: 10000,
+    pingTimeout: 20000,
     upgradeTimeout: 30000,
   });
 
