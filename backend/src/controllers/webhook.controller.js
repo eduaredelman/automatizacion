@@ -499,16 +499,55 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     // 5. ¿Identidad confirmada? (conversation.client_id existe)
     const identityConfirmed = !!conversation.client_id;
 
-    // 5b. Si identidad confirmada pero cliente reclama nombre diferente → re-buscar en WispHub
-    if (identityConfirmed) {
-      const nameClaimMatch = text.match(/(?:me llamo|soy|mi nombre es|llamarse|llamo)\s+([\w\sáéíóúüñÁÉÍÓÚÜÑ]{3,})/i);
-      const claimedName = nameClaimMatch?.[1]?.trim();
-      if (claimedName && claimedName.length > 3) {
-        logger.info('Cliente reclama nombre diferente, re-buscando en WispHub', { phone, claimedName });
-        const newClient = await wisphub.buscarClientePorNombre(claimedName).catch(() => null);
-        if (newClient) {
-          logger.info('Nombre reclamado encontrado en WispHub, actualizando identidad', { phone, name: newClient.nombre });
-          await confirmClientIdentity(conversation, phone, newClient, 'chat');
+    // 5b. Si identidad confirmada pero cliente niega o corrige su nombre
+    if (identityConfirmed && clientInfo?.name) {
+      const normalizeStr = s => (s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z\s]/g, '').trim();
+
+      const currentNameNorm = normalizeStr(clientInfo.name);
+
+      // Detectar NEGACIÓN del nombre actual: "no soy Sabino", "no me llamo Sabino", etc.
+      const isDenial = new RegExp(
+        `(?:no\\s+(?:soy|me llamo|es mi nombre)|no soy)\\s+${currentNameNorm.split(/\s+/)[0]}`,
+        'i'
+      ).test(normalizeStr(text));
+
+      // Detectar AFIRMACIÓN de nombre diferente: "mi nombre es X", "me llamo X"
+      // NO usar "soy X" para evitar capturar "no soy X"
+      const nameClaimMatch = text.match(
+        /(?:mi nombre (?:es|completo es?)|me llamo|llamo|nombre es)\s+([\w\sáéíóúüñÁÉÍÓÚÜÑ]{3,})/i
+      );
+      // Limitar a 5 palabras para no capturar toda la frase
+      const claimedName = nameClaimMatch?.[1]?.trim().split(/\s+/).slice(0, 5).join(' ');
+
+      if (isDenial || claimedName) {
+        logger.info('Cliente disputa identidad', { phone, isDenial, claimedName, current: clientInfo.name });
+
+        if (claimedName && claimedName.length > 3) {
+          // Buscar el nombre reclamado en WispHub
+          const newClient = await wisphub.buscarClientePorNombre(claimedName).catch(() => null);
+          if (newClient) {
+            const newClientId = String(newClient.id_servicio || newClient.id);
+            const currentClientId = String(clientInfo.wisphub_id || '');
+            if (newClientId !== currentClientId) {
+              logger.info('Nombre reclamado encontrado y diferente, actualizando identidad', { phone, name: newClient.nombre });
+              await confirmClientIdentity(conversation, phone, newClient, 'chat');
+              return;
+            }
+          }
+          // Nombre reclamado no está en WispHub → no encontrado
+          logger.info('Nombre reclamado no encontrado en WispHub', { phone, claimedName });
+        }
+
+        if (isDenial && !claimedName) {
+          // Solo niega pero no da nombre → resetear y pedir nombre
+          await query(
+            `UPDATE conversations SET client_id = NULL, bot_intent = 'awaiting_identity' WHERE id = $1`,
+            [conversation.id]
+          );
+          const response = `Entendido. ¿Me puedes dar tu *nombre completo* para buscarte en nuestro sistema?`;
+          await whatsapp.sendTextMessage(phone, response);
+          await saveOutboundMessage(conversation.id, response, 'bot');
           return;
         }
       }
