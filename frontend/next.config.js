@@ -13,6 +13,10 @@ const nextConfig = {
         source: '/api/:path*',
         destination: 'http://backend:3001/api/:path*',
       },
+      {
+        source: '/webhook',
+        destination: 'http://backend:3001/webhook',
+      },
     ];
   },
   env: {
