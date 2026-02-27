@@ -10,7 +10,8 @@ import VoucherModal from './VoucherModal';
 import {
   ArrowLeft, Bot, User, Send, UserCheck, Wifi,
   CreditCard, Phone, MoreVertical, CheckCheck, Clock,
-  AlertTriangle, CheckCircle, XCircle, Loader2, Image as ImageIcon
+  AlertTriangle, CheckCircle, XCircle, Loader2, Image as ImageIcon,
+  Pencil, Check, X
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -78,6 +79,9 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
   const [actionLoading, setActionLoading] = useState(false);
   const [selectedVoucher, setSelectedVoucher] = useState<Payment | null>(null);
   const [showPaymentsPanel, setShowPaymentsPanel] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(conversation.display_name || conversation.phone);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const convMessages = messages[conversation.id] || [];
 
@@ -171,6 +175,27 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
     }
   };
 
+  const handleSaveName = async () => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === (conversation.display_name || conversation.phone)) {
+      setEditingName(false);
+      return;
+    }
+    try {
+      await api.updateChatName(conversation.id, trimmed);
+      onUpdate();
+    } catch (err) {
+      console.error('Update name failed:', err);
+    }
+    setEditingName(false);
+  };
+
+  const startEditing = () => {
+    setNewName(conversation.display_name || conversation.phone);
+    setEditingName(true);
+    setTimeout(() => nameInputRef.current?.select(), 50);
+  };
+
   const isHuman = conversation.status === 'human';
 
   return (
@@ -193,9 +218,33 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
         </div>
 
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-white text-sm truncate">
-            {conversation.display_name || conversation.phone}
-          </h3>
+          {editingName ? (
+            <div className="flex items-center gap-1">
+              <input
+                ref={nameInputRef}
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSaveName(); if (e.key === 'Escape') setEditingName(false); }}
+                className="bg-slate-800 text-white text-sm rounded px-2 py-0.5 border border-slate-600 focus:border-blue-500 outline-none w-44"
+                autoFocus
+              />
+              <button onClick={handleSaveName} className="text-green-400 hover:text-green-300 p-0.5"><Check className="w-4 h-4" /></button>
+              <button onClick={() => setEditingName(false)} className="text-slate-400 hover:text-slate-300 p-0.5"><X className="w-4 h-4" /></button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 group">
+              <h3 className="font-semibold text-white text-sm truncate">
+                {conversation.display_name || conversation.phone}
+              </h3>
+              <button
+                onClick={startEditing}
+                className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition-opacity p-0.5"
+                title="Editar nombre"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-xs">
             <Phone className="w-3 h-3 text-slate-500" />
             <span className="text-slate-500">{conversation.phone}</span>

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const {
-  listChats, getChat, sendMessage, takeover, release, getPayments, resolve
+  listChats, getChat, sendMessage, takeover, release, getPayments, resolve, updateName
 } = require('../controllers/chat.controller');
 
 router.use(authenticate);
@@ -13,6 +13,7 @@ router.post('/:id/send', sendMessage);
 router.post('/:id/takeover', takeover);
 router.post('/:id/release', release);
 router.post('/:id/resolve', resolve);
+router.patch('/:id/name', updateName);
 router.get('/:id/payments', getPayments);
 
 module.exports = router;

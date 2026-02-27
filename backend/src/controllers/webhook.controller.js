@@ -251,24 +251,50 @@ const handleYesNoConfirmation = async ({ conversation, phone, text, mode }) => {
 
 const handleNameInput = async ({ conversation, phone, text, mode }) => {
   try {
-    // 1. Intentar buscar por nombre en WispHub
-    let wispClient = await wisphub.buscarClientePorNombre(text);
+    // 1. Buscar por nombre en WispHub (prioridad — permite encontrar Eduardo aunque teléfono devuelva Sabino)
+    const wispByName = await wisphub.buscarClientePorNombre(text);
 
-    // 2. Si no encontró por nombre, SIEMPRE intentar por teléfono como fallback
-    //    Esto rompe el loop: si el cliente está en el sistema, lo confirmamos sin importar qué escribió
-    if (!wispClient) {
-      logger.info('Nombre no encontrado, buscando por teléfono como fallback', { phone, text });
-      wispClient = await wisphub.buscarClientePorTelefono(phone);
-    }
-
-    if (wispClient) {
-      logger.info('Cliente encontrado, confirmando identidad', { phone, name: wispClient.nombre });
-      await confirmClientIdentity(conversation, phone, wispClient, mode);
+    if (wispByName) {
+      logger.info('Cliente encontrado por nombre en WispHub', { phone, name: wispByName.nombre, text });
+      await confirmClientIdentity(conversation, phone, wispByName, mode);
       return;
     }
 
-    // 3. Realmente no está en el sistema: responder con IA a lo que dijo + escalar
-    logger.info('Cliente no encontrado en WispHub, escalando a humano', { phone });
+    // 2. Fallback por teléfono
+    logger.info('Nombre no encontrado en WispHub, buscando por teléfono', { phone, text });
+    const phoneClient = await wisphub.buscarClientePorTelefono(phone);
+
+    if (phoneClient) {
+      const phoneClientName = phoneClient.nombre || phoneClient.name || '';
+
+      // Comparar si lo que escribió el cliente tiene palabras en común con el nombre registrado
+      const normalize = s => (s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z\s]/g, '').trim();
+
+      const inputWords = normalize(text).split(/\s+/).filter(w => w.length > 3);
+      const foundWords = normalize(phoneClientName).split(/\s+/).filter(w => w.length > 3);
+      const namesOverlap = inputWords.length > 0 && foundWords.length > 0 &&
+        inputWords.some(w => foundWords.some(fw => fw.includes(w) || w.includes(fw)));
+
+      if (!phoneClientName || namesOverlap) {
+        // El nombre que escribió coincide con el del teléfono → confirmar
+        logger.info('Nombre coincide con registro telefónico', { phone, name: phoneClientName });
+        await confirmClientIdentity(conversation, phone, phoneClient, mode);
+      } else {
+        // Teléfono devuelve un nombre DIFERENTE → mostrar y pedir Sí/No
+        logger.info('Nombre no coincide con registro telefónico', { phone, input: text, found: phoneClientName });
+        const nextState = mode === 'payment' ? 'awaiting_payment_confirmation' : 'awaiting_confirmation';
+        await query(`UPDATE conversations SET bot_intent = $1 WHERE id = $2`, [nextState, conversation.id]);
+        const response = `Encontré este número registrado a nombre de *${phoneClientName}*.\n\n¿Eres tú? Responde *Sí* o *No*.`;
+        await whatsapp.sendTextMessage(phone, response);
+        await saveOutboundMessage(conversation.id, response, 'bot');
+      }
+      return;
+    }
+
+    // 3. No encontrado por nombre ni teléfono → responder con IA si es pregunta + escalar
+    logger.info('Cliente no encontrado en WispHub por nombre ni teléfono', { phone });
 
     const historyResult = await query(
       `SELECT sender_type, body FROM messages
@@ -278,24 +304,23 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
     );
     const history = historyResult.rows.reverse();
 
-    // Si parece una pregunta/solicitud (no un nombre), responder con IA primero
-    const pareceNombre = text.trim().split(/\s+/).length <= 5 && !/[¿?]|pagar|internet|servicio|deuda|cuanto|ayuda|funciona/i.test(text);
+    const pareceNombre = text.trim().split(/\s+/).length <= 6 &&
+      !/[¿?]|pagar|internet|servicio|deuda|cuanto|ayuda|funciona|hola|buenas/i.test(text);
 
     if (!pareceNombre) {
-      // Responder a lo que preguntó con IA, luego escalar
       const aiResponse = await ai.generateConversationalResponse(text, history, null);
       await whatsapp.sendTextMessage(phone, aiResponse.text);
       await saveOutboundMessage(conversation.id, aiResponse.text, 'bot');
     }
 
-    const escalarMsg = `Un *asesor humano* te atenderá en breve para ayudarte con tu cuenta. Por favor espera. 👨‍💼`;
+    const escalarMsg = `No encontré una cuenta con ese nombre. Un *asesor humano* te atenderá en breve. 👨‍💼`;
     await whatsapp.sendTextMessage(phone, escalarMsg);
     await saveOutboundMessage(conversation.id, escalarMsg, 'bot');
-    await escalateToHuman(conversation, `Cliente no encontrado por nombre o teléfono: "${text}"`);
+    await escalateToHuman(conversation, `No encontrado por nombre ni teléfono: "${text}"`);
 
   } catch (err) {
     logger.error('Error en handleNameInput', { phone, error: err.message });
-    const response = '😔 No pude verificar tu identidad en este momento. Te conectamos con un asesor.';
+    const response = '😔 No pude verificar tu identidad. Te conectamos con un asesor: *932258382*';
     await whatsapp.sendTextMessage(phone, response).catch(() => {});
     await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
     await escalateToHuman(conversation, 'Error verificando identidad por nombre').catch(() => {});
@@ -473,6 +498,21 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
 
     // 5. ¿Identidad confirmada? (conversation.client_id existe)
     const identityConfirmed = !!conversation.client_id;
+
+    // 5b. Si identidad confirmada pero cliente reclama nombre diferente → re-buscar en WispHub
+    if (identityConfirmed) {
+      const nameClaimMatch = text.match(/(?:me llamo|soy|mi nombre es|llamarse|llamo)\s+([\w\sáéíóúüñÁÉÍÓÚÜÑ]{3,})/i);
+      const claimedName = nameClaimMatch?.[1]?.trim();
+      if (claimedName && claimedName.length > 3) {
+        logger.info('Cliente reclama nombre diferente, re-buscando en WispHub', { phone, claimedName });
+        const newClient = await wisphub.buscarClientePorNombre(claimedName).catch(() => null);
+        if (newClient) {
+          logger.info('Nombre reclamado encontrado en WispHub, actualizando identidad', { phone, name: newClient.nombre });
+          await confirmClientIdentity(conversation, phone, newClient, 'chat');
+          return;
+        }
+      }
+    }
 
     if (wispClient && !identityConfirmed) {
       // Cliente existe en WispHub pero aún no confirmó identidad

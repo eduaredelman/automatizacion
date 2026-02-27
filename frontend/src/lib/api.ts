@@ -57,6 +57,8 @@ export const api = {
     getApi().post(`/chats/${id}/resolve`),
   getChatPayments: (id: string) =>
     getApi().get(`/chats/${id}/payments`),
+  updateChatName: (id: string, name: string) =>
+    getApi().patch(`/chats/${id}/name`, { name }),
 
   // Payments
   getPayments: (params?: Record<string, unknown>) =>

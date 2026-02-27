@@ -251,4 +251,24 @@ const resolve = async (req, res) => {
   }
 };
 
-module.exports = { listChats, getChat, sendMessage, takeover, release, getPayments, resolve };
+// PATCH /api/chats/:id/name - Update conversation display name
+const updateName = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!name?.trim()) return error(res, 'Nombre requerido', 400);
+    const result = await query(
+      `UPDATE conversations SET display_name = $1 WHERE id = $2 RETURNING *`,
+      [name.trim(), id]
+    );
+    if (!result.rows.length) return error(res, 'Conversación no encontrada', 404);
+    const { emitToAgents } = require('../config/socket');
+    emitToAgents('conversation_update', { conversationId: id, display_name: name.trim() });
+    return success(res, result.rows[0], 'Nombre actualizado');
+  } catch (err) {
+    logger.error('updateName error', { error: err.message });
+    return error(res, 'Error al actualizar nombre');
+  }
+};
+
+module.exports = { listChats, getChat, sendMessage, takeover, release, getPayments, resolve, updateName };
