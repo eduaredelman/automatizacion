@@ -131,14 +131,29 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
     const identityConfirmed = !!conversation.client_id;
 
     if (!identityConfirmed) {
-      // Pedir nombre antes de procesar el pago
-      await query(
-        `UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`,
-        [conversation.id]
-      );
-      const askMsg = `Hemos recibido tu comprobante. ✅\n\nPara registrar tu pago correctamente, ¿me confirmas tu *nombre completo* tal como está registrado en Fiber Perú?`;
-      await whatsapp.sendTextMessage(phone, askMsg);
-      await saveOutboundMessage(conversation.id, askMsg, 'bot');
+      // Buscar por teléfono para mostrar el nombre registrado
+      const wispClient = await wisphub.buscarClientePorTelefono(phone);
+      const wispName = wispClient?.nombre || wispClient?.name || null;
+
+      if (wispName) {
+        // Mostrar nombre y pedir confirmación (Sí/No)
+        await query(
+          `UPDATE conversations SET bot_intent = 'awaiting_payment_confirmation' WHERE id = $1`,
+          [conversation.id]
+        );
+        const askMsg = `Hemos recibido tu comprobante. ✅\n\nAntes de registrarlo, encontré este número a nombre de *${wispName}*.\n\n¿Eres tú? Responde *Sí* o *No*.`;
+        await whatsapp.sendTextMessage(phone, askMsg);
+        await saveOutboundMessage(conversation.id, askMsg, 'bot');
+      } else {
+        // Nombre nulo en WispHub o no encontrado, pedir nombre
+        await query(
+          `UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`,
+          [conversation.id]
+        );
+        const askMsg = `Hemos recibido tu comprobante. ✅\n\nPara registrar tu pago correctamente, ¿me confirmas tu *nombre completo* tal como está registrado en Fiber Perú?`;
+        await whatsapp.sendTextMessage(phone, askMsg);
+        await saveOutboundMessage(conversation.id, askMsg, 'bot');
+      }
       return;
     }
 
@@ -165,114 +180,196 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
 };
 
 // ─────────────────────────────────────────────────────────────
-// CONFIRMAR IDENTIDAD
-// Se llama cuando bot_intent es 'awaiting_identity' o 'awaiting_payment_name'
+// CONFIRMAR IDENTIDAD POR SÍ/NO
+// Se llama cuando bot mostró el nombre registrado y espera confirmación
+// Estados: 'awaiting_confirmation' | 'awaiting_payment_confirmation'
 // ─────────────────────────────────────────────────────────────
 
-const handleIdentityConfirmation = async ({ conversation, phone, text, mode }) => {
+const handleYesNoConfirmation = async ({ conversation, phone, text, mode }) => {
   try {
-    // Buscar cliente en WispHub por teléfono
-    const wispClient = await wisphub.buscarClientePorTelefono(phone);
+    const normalized = (text || '').trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-    let nameMatches = false;
-    let clientInfo = null;
+    const isYes = /^(si|yes|ok|claro|correcto|exacto|asi es|soy yo|confirmo|afirmo|cierto|verdad|efectivo|dale|va|de acuerdo|por supuesto|obvio|desde luego|en efecto|aha|yep|yap|afirmativo|afirmati)/.test(normalized);
+    const isNo  = /^(no|nop|nel|para nada|no soy|no es|negativo|incorrecto|error|equivocado)/.test(normalized);
 
-    if (wispClient) {
-      const wispName = wispClient.nombre || wispClient.name || '';
-
-      // Normalizar para comparación flexible (sin tildes, minúsculas)
-      const normalize = (s) => (s || '')
-        .toLowerCase()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9\s]/g, '')
-        .trim();
-
-      const inputWords = normalize(text).split(/\s+/).filter(w => w.length > 2);
-      const wispWords  = normalize(wispName).split(/\s+/).filter(w => w.length > 2);
-
-      // Al menos una palabra del nombre coincide
-      nameMatches = inputWords.length > 0 &&
-        inputWords.some(w => wispWords.some(ww => ww.includes(w) || w.includes(ww)));
-
-      if (nameMatches) {
-        const clientId   = String(wispClient.id_servicio || wispClient.id);
-        const clientName = wispClient.nombre || wispClient.name || 'N/A';
-        const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
-
-        // Upsert en caché local
-        const clientRes = await query(
-          `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
-           VALUES ($1,$2,$3,$4,$5,NOW())
-           ON CONFLICT (wisphub_id) DO UPDATE
-             SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()
-           RETURNING id`,
-          [clientId, phone, clientName, clientId, clientPlan]
-        );
-
-        // Vincular conversación al cliente y marcar identidad confirmada
-        await query(
-          `UPDATE conversations SET client_id = $1, display_name = $2, bot_intent = 'identity_ok' WHERE id = $3`,
-          [clientRes.rows[0].id, clientName, conversation.id]
-        );
-
-        clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId, debt_amount: null };
-
-        // Obtener deuda actual
-        try {
-          const debtInfo = await wisphub.consultarDeuda(clientId);
-          clientInfo.debt_amount = debtInfo.monto_deuda;
-          clientInfo.tiene_deuda = debtInfo.tiene_deuda;
-        } catch (e) { /* deuda opcional */ }
-
-        logger.info('Identidad confirmada', { phone, name: clientName });
+    if (isYes) {
+      // Re-lookup WispHub por teléfono (mismo número, mismo resultado)
+      const wispClient = await wisphub.buscarClientePorTelefono(phone);
+      if (!wispClient) {
+        logger.warn('WispHub client not found on confirmation re-lookup', { phone });
+        const response = `Hubo un problema verificando tu información. Por favor espera, un asesor te atenderá. 👨‍💼`;
+        await whatsapp.sendTextMessage(phone, response);
+        await saveOutboundMessage(conversation.id, response, 'bot');
+        await escalateToHuman(conversation, 'Cliente no encontrado en WispHub en re-lookup de confirmación');
+        return;
       }
-    }
+      await confirmClientIdentity(conversation, phone, wispClient, mode);
 
-    if (!nameMatches) {
-      // Nombre no coincide → pedir de nuevo
-      const response = `😔 No encontré ese nombre en el sistema para este número.\n\n¿Me confirmas tu *nombre completo* tal como aparece en tu contrato con Fiber Perú?\n_(Ejemplo: Juan García Pérez)_`;
+    } else if (isNo) {
+      // Dijeron No → pedir nombre y dirección para buscar diferente
+      const nextIntent = mode === 'payment' ? 'awaiting_payment_name' : 'awaiting_identity';
+      await query(`UPDATE conversations SET bot_intent = $1 WHERE id = $2`, [nextIntent, conversation.id]);
+      const response = `Entendido. Para encontrar tu cuenta correctamente, ¿me indicas tu *nombre completo* y tu *dirección o referencia* de instalación?`;
       await whatsapp.sendTextMessage(phone, response);
       await saveOutboundMessage(conversation.id, response, 'bot');
+
+    } else {
+      // Respuesta que no es Sí/No (ej: "Quiero pagar", "Tengo problemas")
+      // → Responder con IA a lo que preguntó + recordar confirmar identidad
+      logger.info('Respuesta fuera de Sí/No en confirmación, delegando a IA', { phone, text });
+
+      const historyResult = await query(
+        `SELECT sender_type, body FROM messages
+         WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
+         ORDER BY created_at DESC LIMIT 8`,
+        [conversation.id]
+      );
+      const history = historyResult.rows.reverse();
+
+      const aiResponse = await ai.generateConversationalResponse(text, history, null);
+      const reminder = `\n\n_(Para acceder a tu cuenta, aún necesito que confirmes si eres la persona registrada. Responde *Sí* o *No*.)_`;
+      const fullResponse = aiResponse.text + reminder;
+
+      await whatsapp.sendTextMessage(phone, fullResponse);
+      await saveOutboundMessage(conversation.id, fullResponse, 'bot');
+    }
+
+  } catch (err) {
+    logger.error('Error en handleYesNoConfirmation', { phone, error: err.message });
+    const response = '😔 No pude procesar tu respuesta. Por favor intenta de nuevo o contacta soporte: *932258382*';
+    await whatsapp.sendTextMessage(phone, response).catch(() => {});
+    await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// CONFIRMAR IDENTIDAD POR NOMBRE ESCRITO
+// Se llama cuando bot pidió nombre completo y cliente lo envió
+// Estados: 'awaiting_identity' | 'awaiting_payment_name'
+// ─────────────────────────────────────────────────────────────
+
+const handleNameInput = async ({ conversation, phone, text, mode }) => {
+  try {
+    // 1. Intentar buscar por nombre en WispHub
+    let wispClient = await wisphub.buscarClientePorNombre(text);
+
+    // 2. Si no encontró por nombre, SIEMPRE intentar por teléfono como fallback
+    //    Esto rompe el loop: si el cliente está en el sistema, lo confirmamos sin importar qué escribió
+    if (!wispClient) {
+      logger.info('Nombre no encontrado, buscando por teléfono como fallback', { phone, text });
+      wispClient = await wisphub.buscarClientePorTelefono(phone);
+    }
+
+    if (wispClient) {
+      logger.info('Cliente encontrado, confirmando identidad', { phone, name: wispClient.nombre });
+      await confirmClientIdentity(conversation, phone, wispClient, mode);
       return;
     }
 
-    // Identidad confirmada ✅
-    if (mode === 'payment') {
-      // Buscar el pago pendiente más reciente de esta conversación
-      const pending = await query(
-        `SELECT id FROM payments WHERE conversation_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
-        [conversation.id]
-      );
+    // 3. Realmente no está en el sistema: responder con IA a lo que dijo + escalar
+    logger.info('Cliente no encontrado en WispHub, escalando a humano', { phone });
 
-      if (pending.rows.length) {
-        const result = await payment.finalizePendingVoucher(pending.rows[0].id, phone);
-        const responseText = buildPaymentResponse(result);
-        await whatsapp.sendTextMessage(phone, responseText);
-        await saveOutboundMessage(conversation.id, responseText, 'bot');
+    const historyResult = await query(
+      `SELECT sender_type, body FROM messages
+       WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
+       ORDER BY created_at DESC LIMIT 8`,
+      [conversation.id]
+    );
+    const history = historyResult.rows.reverse();
 
-        if (['manual_review', 'error', 'client_not_found'].includes(result.status)) {
-          await escalateToHuman(conversation, `Pago requiere revisión: ${result.status}`);
-        }
-        await logEvent(conversation.id, pending.rows[0].id, 'payment_processed', result.status);
-        await emitSocketEvent('payment_update', { conversationId: conversation.id, status: result.status });
-      } else {
-        const welcome = `¡Gracias ${clientInfo.name}! ✅ No encontré un comprobante pendiente. Si ya lo enviaste, nuestro equipo lo revisará pronto.`;
-        await whatsapp.sendTextMessage(phone, welcome);
-        await saveOutboundMessage(conversation.id, welcome, 'bot');
+    // Si parece una pregunta/solicitud (no un nombre), responder con IA primero
+    const pareceNombre = text.trim().split(/\s+/).length <= 5 && !/[¿?]|pagar|internet|servicio|deuda|cuanto|ayuda|funciona/i.test(text);
+
+    if (!pareceNombre) {
+      // Responder a lo que preguntó con IA, luego escalar
+      const aiResponse = await ai.generateConversationalResponse(text, history, null);
+      await whatsapp.sendTextMessage(phone, aiResponse.text);
+      await saveOutboundMessage(conversation.id, aiResponse.text, 'bot');
+    }
+
+    const escalarMsg = `Un *asesor humano* te atenderá en breve para ayudarte con tu cuenta. Por favor espera. 👨‍💼`;
+    await whatsapp.sendTextMessage(phone, escalarMsg);
+    await saveOutboundMessage(conversation.id, escalarMsg, 'bot');
+    await escalateToHuman(conversation, `Cliente no encontrado por nombre o teléfono: "${text}"`);
+
+  } catch (err) {
+    logger.error('Error en handleNameInput', { phone, error: err.message });
+    const response = '😔 No pude verificar tu identidad en este momento. Te conectamos con un asesor.';
+    await whatsapp.sendTextMessage(phone, response).catch(() => {});
+    await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
+    await escalateToHuman(conversation, 'Error verificando identidad por nombre').catch(() => {});
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// CONFIRMAR IDENTIDAD (lógica compartida)
+// Guarda cliente en BD, vincula conversación, procesa pago si aplica
+// ─────────────────────────────────────────────────────────────
+
+const confirmClientIdentity = async (conversation, phone, wispClient, mode) => {
+  const clientId   = String(wispClient.id_servicio || wispClient.id);
+  const clientName = wispClient.nombre || wispClient.name || 'Cliente';
+  const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+  // Upsert en caché local
+  const clientRes = await query(
+    `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
+     VALUES ($1,$2,$3,$4,$5,NOW())
+     ON CONFLICT (wisphub_id) DO UPDATE
+       SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()
+     RETURNING id`,
+    [clientId, phone, clientName, clientId, clientPlan]
+  );
+
+  // Vincular conversación al cliente y marcar identidad confirmada
+  await query(
+    `UPDATE conversations SET client_id = $1, display_name = $2, bot_intent = 'identity_ok' WHERE id = $3`,
+    [clientRes.rows[0].id, clientName, conversation.id]
+  );
+
+  // Obtener deuda
+  let clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId, debt_amount: null, tiene_deuda: false };
+  try {
+    const debtInfo = await wisphub.consultarDeuda(clientId);
+    clientInfo.debt_amount = debtInfo.monto_deuda;
+    clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+  } catch (e) { /* deuda opcional */ }
+
+  logger.info('Identidad confirmada ✅', { phone, name: clientName, clientId });
+
+  if (mode === 'payment') {
+    // Buscar el pago pendiente más reciente de esta conversación
+    const pending = await query(
+      `SELECT id FROM payments WHERE conversation_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1`,
+      [conversation.id]
+    );
+
+    if (pending.rows.length) {
+      const result = await payment.finalizePendingVoucher(pending.rows[0].id, phone);
+      const responseText = buildPaymentResponse(result);
+      await whatsapp.sendTextMessage(phone, responseText);
+      await saveOutboundMessage(conversation.id, responseText, 'bot');
+
+      if (['manual_review', 'error', 'client_not_found'].includes(result.status)) {
+        await escalateToHuman({ id: conversation.id }, `Pago requiere revisión: ${result.status}`);
       }
+      await logEvent(conversation.id, pending.rows[0].id, 'payment_processed', result.status);
+      await emitSocketEvent('payment_update', { conversationId: conversation.id, status: result.status });
     } else {
-      // Solo confirmación de identidad
-      const welcome = `¡Perfecto, ${clientInfo.name}! 😊 ¿En qué puedo ayudarte hoy?`;
+      const welcome = `¡Gracias, ${clientName}! ✅ No encontré un comprobante pendiente. Si ya lo enviaste, nuestro equipo lo revisará pronto.`;
       await whatsapp.sendTextMessage(phone, welcome);
       await saveOutboundMessage(conversation.id, welcome, 'bot');
     }
 
-  } catch (err) {
-    logger.error('Error en confirmación de identidad', { phone, error: err.message });
-    const response = '😔 No pude verificar tu identidad en este momento. Te conectamos con un asesor.';
-    await whatsapp.sendTextMessage(phone, response).catch(() => {});
-    await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
-    await escalateToHuman(conversation, 'Error verificando identidad').catch(() => {});
+  } else {
+    // Solo confirmación de identidad → bienvenida con contexto
+    const debtMsg = clientInfo.tiene_deuda && clientInfo.debt_amount > 0
+      ? ` Tienes un saldo pendiente de *S/ ${clientInfo.debt_amount}*.`
+      : '';
+    const welcome = `¡Perfecto, ${clientName}! 😊${debtMsg} ¿En qué puedo ayudarte hoy?`;
+    await whatsapp.sendTextMessage(phone, welcome);
+    await saveOutboundMessage(conversation.id, welcome, 'bot');
   }
 };
 
@@ -282,17 +379,27 @@ const handleIdentityConfirmation = async ({ conversation, phone, text, mode }) =
 
 const handleTextMessage = async ({ conversation, message, phone, text }) => {
   try {
-    // 1. ¿Estamos esperando confirmación de nombre?
-    if (conversation.bot_intent === 'awaiting_identity') {
-      await handleIdentityConfirmation({ conversation, phone, text, mode: 'chat' });
+    // 1. ¿Estamos esperando respuesta Sí/No de confirmación de identidad?
+    if (conversation.bot_intent === 'awaiting_confirmation') {
+      await handleYesNoConfirmation({ conversation, phone, text, mode: 'chat' });
       return;
     }
-    if (conversation.bot_intent === 'awaiting_payment_name') {
-      await handleIdentityConfirmation({ conversation, phone, text, mode: 'payment' });
+    if (conversation.bot_intent === 'awaiting_payment_confirmation') {
+      await handleYesNoConfirmation({ conversation, phone, text, mode: 'payment' });
       return;
     }
 
-    // 2. Historial para contexto de IA
+    // 2. ¿Estamos esperando nombre escrito del cliente?
+    if (conversation.bot_intent === 'awaiting_identity') {
+      await handleNameInput({ conversation, phone, text, mode: 'chat' });
+      return;
+    }
+    if (conversation.bot_intent === 'awaiting_payment_name') {
+      await handleNameInput({ conversation, phone, text, mode: 'payment' });
+      return;
+    }
+
+    // 3. Historial para contexto de IA
     const historyResult = await query(
       `SELECT sender_type, body FROM messages
        WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
@@ -301,7 +408,7 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     );
     const history = historyResult.rows.reverse();
 
-    // 3. SIEMPRE consultar WispHub como fuente principal
+    // 4. SIEMPRE consultar WispHub como fuente principal
     let clientInfo = null;
     let wispClient = null;
 
@@ -312,6 +419,8 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
         const clientId   = String(wispClient.id_servicio || wispClient.id);
         const clientName = wispClient.nombre || wispClient.name || null;
         const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+        logger.info('WispHub cliente encontrado', { phone, name: clientName, clientId });
 
         // Actualizar caché local (no bloqueante)
         query(
@@ -338,15 +447,15 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
         // No registrado en WispHub
         logger.info('Número no registrado en WispHub', { phone });
 
-        // Si identidad no confirmada → pedir nombre y dirección para buscar
         if (!conversation.client_id) {
+          // Primer contacto: pedir nombre y dirección para buscar manualmente
           await query(`UPDATE conversations SET bot_intent = 'awaiting_identity' WHERE id = $1`, [conversation.id]);
           const response = `Hola, gracias por contactarte con *Fiber Perú*. 😊\n\nTu número no figura en nuestro sistema. Para poder ayudarte, ¿me indicas tu *nombre completo* y *dirección o referencia* de instalación?`;
           await whatsapp.sendTextMessage(phone, response);
           await saveOutboundMessage(conversation.id, response, 'bot');
           return;
         }
-        // Si ya estaba confirmado antes (número puede haberse cambiado), seguir con IA
+        // Si ya estaba confirmado antes, seguir con IA
       }
     } catch (wispErr) {
       logger.warn('WispHub no disponible, usando caché local', { phone, error: wispErr.message });
@@ -362,23 +471,33 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       }
     }
 
-    // 4. ¿Identidad confirmada? (conversation.client_id existe)
+    // 5. ¿Identidad confirmada? (conversation.client_id existe)
     const identityConfirmed = !!conversation.client_id;
 
     if (wispClient && !identityConfirmed) {
-      // Cliente existe en WispHub pero aún no confirmó su nombre
-      // Actualizar display_name con el nombre real de WispHub
-      if (clientInfo?.name && clientInfo.name !== 'N/A') {
-        query(`UPDATE conversations SET display_name = $1 WHERE id = $2`, [clientInfo.name, conversation.id]).catch(() => {});
+      // Cliente existe en WispHub pero aún no confirmó identidad
+      const wispName = wispClient.nombre || wispClient.name || null;
+
+      if (wispName) {
+        // Mostrar nombre y pedir Sí/No
+        if (clientInfo?.name && clientInfo.name !== 'N/A') {
+          query(`UPDATE conversations SET display_name = $1 WHERE id = $2`, [clientInfo.name, conversation.id]).catch(() => {});
+        }
+        await query(`UPDATE conversations SET bot_intent = 'awaiting_confirmation' WHERE id = $1`, [conversation.id]);
+        const response = `Hola, soy el asistente de *Fiber Perú*. 😊\n\nEncontré tu número registrado a nombre de *${wispName}*.\n\n¿Eres tú? Responde *Sí* o *No*.`;
+        await whatsapp.sendTextMessage(phone, response);
+        await saveOutboundMessage(conversation.id, response, 'bot');
+      } else {
+        // Nombre nulo en WispHub → pedir nombre
+        await query(`UPDATE conversations SET bot_intent = 'awaiting_identity' WHERE id = $1`, [conversation.id]);
+        const response = `Hola, soy el asistente de *Fiber Perú*. 😊\n\nPara brindarte el mejor servicio, ¿me confirmas tu *nombre completo* como aparece en tu contrato?`;
+        await whatsapp.sendTextMessage(phone, response);
+        await saveOutboundMessage(conversation.id, response, 'bot');
       }
-      await query(`UPDATE conversations SET bot_intent = 'awaiting_identity' WHERE id = $1`, [conversation.id]);
-      const response = `Hola, soy el asistente de *Fiber Perú*. 😊\n\nPara brindarte el mejor servicio, ¿me confirmas tu *nombre completo* tal como está registrado en el sistema?`;
-      await whatsapp.sendTextMessage(phone, response);
-      await saveOutboundMessage(conversation.id, response, 'bot');
       return;
     }
 
-    // 5. Pide hablar con humano
+    // 6. Pide hablar con humano
     const quiereHumano = /asesor|agente|humano|persona|hablar con alguien|no entiendo/i.test(text);
     if (quiereHumano) {
       await escalateToHuman(conversation, 'Cliente solicitó asesor humano');
@@ -388,10 +507,10 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       return;
     }
 
-    // 6. Detectar intención
+    // 7. Detectar intención
     const intent = await ai.detectIntent(text, history);
 
-    // 7. Auto-escalar reclamos
+    // 8. Auto-escalar reclamos
     if (intent.intent === 'complaint' && intent.confidence > 0.6) {
       await escalateToHuman(conversation, 'Reclamo detectado automáticamente');
       const response = '😔 Lamento los inconvenientes. Un *asesor humano* revisará tu caso de inmediato. Por favor espera un momento. ⏳';
@@ -400,12 +519,12 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       return;
     }
 
-    // 8. Generar respuesta con IA conversacional
+    // 9. Generar respuesta con IA conversacional
     const aiResponse = await ai.generateConversationalResponse(text, history, clientInfo);
     await whatsapp.sendTextMessage(phone, aiResponse.text);
     await saveOutboundMessage(conversation.id, aiResponse.text, 'bot');
 
-    // 9. Actualizar intención (preservar identity_ok si ya estaba confirmado)
+    // 10. Actualizar intención (preservar identity_ok si ya estaba confirmado)
     await query(
       `UPDATE conversations SET
          bot_intent = CASE WHEN client_id IS NOT NULL THEN 'identity_ok' ELSE $1 END,
