@@ -1,8 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 
-// Misma URL base que el API — en producción es el dominio público
-// y Next.js tiene el rewrite /api/:path* → http://backend:3001/api/:path*
-// El path /api/socket.io cruza por ese rewrite llegando al backend correctamente.
+// En producción: wss://pagos.fiber-peru.com/socket.io
+// NPM Custom Location /socket.io → pagos-backend:3001 (con WebSocket ON), bypaseando Next.js
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 let socket: Socket | null = null;
@@ -15,10 +14,9 @@ export const getSocket = (): Socket | null => {
     if (!token) return null;
 
     socket = io(SOCKET_URL, {
-      path: '/api/socket.io',
+      // Sin path custom → usa /socket.io por defecto
+      // NPM enruta wss://pagos.fiber-peru.com/socket.io → pagos-backend:3001 (Custom Location)
       auth: { token },
-      // polling primero (funciona a través del rewrite de Next.js),
-      // luego intenta upgrade a WebSocket si NPM lo permite
       transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionDelay: 2000,

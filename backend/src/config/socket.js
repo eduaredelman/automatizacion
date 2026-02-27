@@ -6,9 +6,7 @@ let io;
 
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
-    // /api/socket.io → funciona a través del rewrite de Next.js (/api/:path* → backend)
-    // Esto evita que Next.js bloquee la conexión (Next.js no puede proxy WebSocket)
-    path: '/api/socket.io',
+    // Path por defecto /socket.io — NPM enruta /socket.io directo al backend (Custom Location)
     cors: {
       origin: '*',
       credentials: false,
