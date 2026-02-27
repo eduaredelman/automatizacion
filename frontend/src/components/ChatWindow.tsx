@@ -99,17 +99,25 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
     loadMessages();
     joinConversation(conversation.id);
 
-    // Escuchar mensajes en tiempo real para esta conversación
     const socket = getSocket();
     if (socket) {
-      // 'message' → emitido a la sala de la conversación (mensajes directos)
       const handleMessage = (msg: Message) => {
         addMessage(msg);
       };
+
+      // Al reconectar el socket, volver a unirse a la sala y recargar mensajes
+      const handleReconnect = () => {
+        joinConversation(conversation.id);
+        loadMessages();
+      };
+
       socket.on('message', handleMessage);
+      socket.on('connect', handleReconnect);
+
       return () => {
         leaveConversation(conversation.id);
         socket.off('message', handleMessage);
+        socket.off('connect', handleReconnect);
       };
     }
 

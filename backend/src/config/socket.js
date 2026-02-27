@@ -7,10 +7,14 @@ let io;
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
     cors: {
-      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+      origin: (process.env.FRONTEND_URL || 'http://localhost:3000').split(','),
       credentials: true,
     },
     transports: ['websocket', 'polling'],
+    // Mantener la conexión viva a través de NPM/nginx
+    pingInterval: 10000,   // ping cada 10 segundos
+    pingTimeout: 20000,    // esperar 20s antes de cerrar
+    upgradeTimeout: 30000,
   });
 
   // Auth middleware

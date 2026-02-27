@@ -178,28 +178,55 @@ const consultarDeuda = async (clienteId) => {
   ]);
 
   try {
-    const { data } = await withRetry(() =>
-      http.get('/facturas/', { params: { id_servicio: clienteId, limit: 50 } })
-    );
+    // Intentar primero filtrar directamente por estado pendiente en WispHub
+    // (evita traer todas las facturas pagas)
+    let pendientes = [];
 
-    const facturas = data.results || data || [];
-    logger.info('WispHub facturas response', {
-      clienteId,
-      total: facturas.length,
-      estados: facturas.slice(0, 5).map(f => f.estado || f.status),
+    const statusFilters = ['Pendiente', 'pendiente', 'Vencida', 'vencida', 'No Pagada'];
+    for (const estado of statusFilters) {
+      try {
+        const { data } = await withRetry(() =>
+          http.get('/facturas/', { params: { id_servicio: clienteId, estado, limit: 20 } })
+        );
+        const rows = data.results || data || [];
+        if (Array.isArray(rows) && rows.length > 0) {
+          pendientes.push(...rows);
+          logger.info(`WispHub facturas por estado "${estado}"`, { clienteId, count: rows.length });
+        }
+      } catch { /* continúa con el siguiente estado */ }
+    }
+
+    // Deduplicar por id
+    const seen = new Set();
+    pendientes = pendientes.filter(f => {
+      const id = f.id_factura || f.id;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
     });
 
-    // Buscar por campo estado o status
-    const pendientes = facturas.filter(f => {
-      const estado = (f.estado || f.status || '').toString();
-      return estadosPendientes.has(estado) || estadosPendientes.has(estado.toLowerCase());
-    });
+    // Si no encontró nada con filtro de estado, traer todas y filtrar localmente
+    if (pendientes.length === 0) {
+      const { data } = await withRetry(() =>
+        http.get('/facturas/', { params: { id_servicio: clienteId, limit: 100 } })
+      );
+      const facturas = data.results || data || [];
+      logger.info('WispHub facturas (sin filtro)', {
+        clienteId,
+        total: facturas.length,
+        estados: [...new Set(facturas.map(f => f.estado || f.status))],
+      });
+
+      pendientes = facturas.filter(f => {
+        const estado = (f.estado || f.status || '').toString();
+        return estadosPendientes.has(estado) || estadosPendientes.has(estado.toLowerCase());
+      });
+    }
 
     const montoTotal = pendientes.reduce((s, f) => s + parseFloat(f.monto || f.total || f.monto_total || 0), 0);
 
     logger.info('WispHub deuda resultado', {
       clienteId,
-      totalFacturas: facturas.length,
       pendientes: pendientes.length,
       monto: montoTotal,
     });
