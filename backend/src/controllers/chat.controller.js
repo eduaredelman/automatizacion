@@ -271,16 +271,31 @@ const updateName = async (req, res) => {
   }
 };
 
-// DELETE /api/chats/:id - Archive conversation (hide from list)
+// DELETE /api/chats/:id - Permanently delete conversation + all related data
 const archiveChat = async (req, res) => {
   try {
     const { id } = req.params;
-    await query(`UPDATE conversations SET is_archived = true WHERE id = $1`, [id]);
+
+    const check = await query('SELECT id, phone, display_name FROM conversations WHERE id = $1', [id]);
+    if (!check.rows.length) return error(res, 'Conversación no encontrada', 404);
+
+    // Eliminar en orden respetando FK constraints
+    await query('DELETE FROM events WHERE conversation_id = $1', [id]);
+    await query('DELETE FROM messages WHERE conversation_id = $1', [id]);
+    await query('DELETE FROM payments WHERE conversation_id = $1', [id]);
+    await query('DELETE FROM takeover_sessions WHERE conversation_id = $1', [id]);
+    await query('DELETE FROM conversations WHERE id = $1', [id]);
+
+    logger.info('Conversation permanently deleted', {
+      conversationId: id,
+      phone: check.rows[0].phone,
+      name: check.rows[0].display_name,
+    });
     emitToAgents('conversation_archived', { conversationId: id });
-    return success(res, {}, 'Conversación archivada');
+    return success(res, { id }, 'Conversación eliminada permanentemente');
   } catch (err) {
-    logger.error('archiveChat error', { error: err.message });
-    return error(res, 'Error al archivar conversación');
+    logger.error('deleteChat error', { error: err.message });
+    return error(res, 'Error al eliminar conversación');
   }
 };
 

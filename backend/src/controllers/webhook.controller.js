@@ -49,7 +49,8 @@ const receive = async (req, res) => {
          display_name     = COALESCE(NULLIF(EXCLUDED.display_name, EXCLUDED.phone), conversations.display_name),
          last_message     = EXCLUDED.last_message,
          last_message_at  = NOW(),
-         unread_count     = conversations.unread_count + 1
+         unread_count     = conversations.unread_count + 1,
+         is_archived      = false
        RETURNING *`,
       [phone, displayName, text || `[${type}]`]
     );

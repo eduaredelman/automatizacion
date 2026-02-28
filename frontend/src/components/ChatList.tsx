@@ -1,7 +1,7 @@
 'use client';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Search, RefreshCw, Bot, Archive } from 'lucide-react';
+import { Search, RefreshCw, Bot, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 
 interface Conversation {
@@ -120,14 +120,25 @@ export default function ChatList({
                     : 'hover:bg-slate-800/40'
                 )}
               >
-                {/* Botón archivar (visible en hover) */}
+                {/* Botón eliminar permanentemente (visible en hover) */}
                 {onArchive && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); onArchive(conv.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const name = conv.display_name || conv.phone;
+                      const ok = window.confirm(
+                        `⚠️ ELIMINAR CONVERSACIÓN PERMANENTEMENTE\n\n` +
+                        `Cliente: ${name}\n\n` +
+                        `Se eliminarán todos los mensajes, pagos y eventos de esta conversación.\n` +
+                        `Esta acción NO se puede deshacer.\n\n` +
+                        `¿Confirmas la eliminación?`
+                      );
+                      if (ok) onArchive(conv.id);
+                    }}
                     className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 z-10 p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all"
-                    title="Archivar conversación"
+                    title="Eliminar conversación permanentemente"
                   >
-                    <Archive className="w-3.5 h-3.5" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
                 <button
