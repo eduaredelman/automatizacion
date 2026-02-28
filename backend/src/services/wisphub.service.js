@@ -56,16 +56,55 @@ const buscarClientePorTelefono = async (phone) => {
 
 const buscarClientePorNombre = async (name) => {
   if (!name || name.length < 3) return null;
-  try {
-    const { data } = await withRetry(() =>
-      http.get('/clientes/', { params: { search: name, limit: 1 } })
-    );
-    const results = data.results || data;
-    return Array.isArray(results) && results.length ? results[0] : null;
-  } catch (err) {
-    logger.warn('WispHub name search failed', { name, error: err.message });
-    return null;
+
+  const normalize = s => (s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, '').trim();
+
+  const searchWords = normalize(name).split(/\s+/).filter(w => w.length > 2);
+  if (!searchWords.length) return null;
+
+  // Validar que el resultado devuelto realmente contiene palabras de la búsqueda
+  const isGoodMatch = (client) => {
+    const cn = normalize(client.nombre || client.name || '');
+    const cu = normalize(client.usuario || client.username || '');
+    return searchWords.some(w => cn.includes(w) || cu.includes(w));
+  };
+
+  // Estrategias en orden: nombre completo → primera palabra → campo nombre → usuario
+  const strategies = [
+    { search: name },
+    { search: searchWords[0] },
+    { nombre: name },
+    { nombre: searchWords[0] },
+    { usuario: searchWords[0] },
+  ];
+
+  for (const params of strategies) {
+    try {
+      const { data } = await withRetry(() =>
+        http.get('/clientes/', { params: { ...params, limit: 10 } })
+      );
+      const results = data.results || data;
+      if (!Array.isArray(results) || !results.length) continue;
+
+      const match = results.find(isGoodMatch);
+      if (match) {
+        logger.info('WispHub name search found match', {
+          searchName: name, found: match.nombre, strategy: JSON.stringify(params),
+        });
+        return match;
+      }
+      logger.debug('WispHub name search returned results but no match passed validation', {
+        searchName: name, strategy: JSON.stringify(params), returned: results.map(r => r.nombre),
+      });
+    } catch (err) {
+      logger.warn('WispHub name search strategy failed', { params, error: err.message });
+    }
   }
+
+  logger.info('WispHub name search: no match found for any strategy', { name });
+  return null;
 };
 
 const buscarCliente = async (phone, name = null) => {
