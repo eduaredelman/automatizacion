@@ -19,6 +19,9 @@ const withRetry = async (fn, retries = 3) => {
     try {
       return await fn();
     } catch (err) {
+      const status = err.response?.status;
+      // No reintentar en errores 4xx (el servidor rechazó la solicitud, reintentar no ayuda)
+      if (status >= 400 && status < 500) throw err;
       if (i === retries - 1) throw err;
       await new Promise(r => setTimeout(r, Math.pow(2, i) * 1000));
       logger.warn(`WispHub retry ${i + 1}/${retries}`);
@@ -436,13 +439,27 @@ const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
     ...(paymentData.operationCode && { codigo_operacion: paymentData.operationCode }),
   };
 
-  // Intentar primero con endpoint dedicado /pagar/, luego PATCH con distintos valores de estado
+  // Campos del modal de WispHub "Registrar Pago": forma_pago, importe, referencia, factura
+  const pagoBody = {
+    factura:    facturaId,
+    id_factura: facturaId,
+    importe:    paymentData.amount,
+    monto:      paymentData.amount,
+    forma_pago: paymentData.method || 'transferencia',
+    medio_pago: paymentData.method || 'transferencia',
+    referencia: paymentData.operationCode || '',
+    codigo_operacion: paymentData.operationCode || '',
+    fecha_pago: base.fecha_pago,
+  };
+
+  // Intentar primero con el endpoint /pagos/ usando ID de factura (igual que el modal UI),
+  // luego endpoint dedicado /pagar/, luego PATCH con distintos valores de estado
   const attempts = [
+    { method: 'post',  url: '/pagos/',                        body: pagoBody },
     { method: 'post',  url: `/facturas/${facturaId}/pagar/`,  body: { ...base, monto: paymentData.amount } },
     { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagada' } },
     { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'pagada' } },
     { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagado' } },
-    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'PAGADA' } },
     { method: 'patch', url: `/facturas/${facturaId}/`,        body: { estado: 'Pagada' } },
   ];
 
