@@ -221,17 +221,23 @@ const consultarDeuda = async (clienteId) => {
   const estadosPendientes = new Set([
     'pendiente', 'no pagada', 'no pagado', 'vencida', 'vencido',
     'Pendiente', 'No Pagada', 'No Pagado', 'Vencida', 'Vencido',
+    'pendiente de pago', 'Pendiente de Pago', 'PENDIENTE DE PAGO',
+    'por pagar', 'Por Pagar', 'POR PAGAR',
     'impago', 'impaga', 'mora', 'atrasado', 'atrasada',
     'Impago', 'Impaga', 'Mora', 'Atrasado', 'Atrasada',
     'sin pagar', 'Sin Pagar',
   ]);
 
   try {
-    // Intentar primero filtrar directamente por estado pendiente en WispHub
-    // (evita traer todas las facturas pagas)
     let pendientes = [];
 
-    const statusFilters = ['Pendiente', 'pendiente', 'Vencida', 'vencida', 'No Pagada'];
+    const statusFilters = [
+      'Pendiente', 'pendiente',
+      'Pendiente de Pago', 'pendiente de pago',
+      'Vencida', 'vencida',
+      'No Pagada', 'no pagada',
+      'Por Pagar',
+    ];
     for (const estado of statusFilters) {
       try {
         const { data } = await withRetry(() =>

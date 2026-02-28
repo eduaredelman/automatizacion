@@ -358,7 +358,14 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     }
 
     // 4. Obtener clientInfo del cliente confirmado (de la BD, no de WispHub por teléfono)
-    let clientInfo = { name: conversation.display_name || 'Cliente' };
+    // Detectar si display_name es un username de sistema (sin espacios + tiene dígitos) → no usarlo
+    const rawDisplayName = conversation.display_name || '';
+    const isRealName = rawDisplayName &&
+      rawDisplayName !== conversation.phone &&
+      rawDisplayName.trim().length > 2 &&
+      (rawDisplayName.includes(' ') || /^[A-Za-zÀ-ÿ\s]+$/.test(rawDisplayName));
+
+    let clientInfo = { name: isRealName ? rawDisplayName : 'Cliente' };
 
     if (conversation.client_id) {
       try {
@@ -368,8 +375,10 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
         );
         if (ccRes.rows.length) {
           const cc = ccRes.rows[0];
-          // El nombre mostrado es siempre el que el cliente escribió (display_name)
-          clientInfo = { name: conversation.display_name || cc.name, plan: cc.plan, wisphub_id: cc.wisphub_id };
+          // Preferir display_name real; si es username, usar nombre de BD con misma validación
+          const ccNameIsReal = cc.name && cc.name.includes(' ');
+          const bestName = isRealName ? rawDisplayName : (ccNameIsReal ? cc.name : 'Cliente');
+          clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id };
           if (cc.wisphub_id) {
             try {
               const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id);
