@@ -178,16 +178,23 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       }
     }
 
-    // Registrar pago en WispHub SIEMPRE (con o sin deuda detectada)
-    const wispResult = await wisphub.registrarPago(clientId, {
-      amount: aiVisionData.amount,
-      date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
-      method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
-      operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
-    });
+    // Intentar registrar pago en WispHub (no fatal — el endpoint /pagos/ puede no existir en todos los planes)
+    let wispResult = null;
+    try {
+      wispResult = await wisphub.registrarPago(clientId, {
+        amount: aiVisionData.amount,
+        date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
+        method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
+        operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
+      });
+    } catch (regErr) {
+      logger.warn('WispHub registrarPago falló (no fatal) — se marcará la factura como pagada igualmente', {
+        clientId, error: regErr.message,
+      });
+    }
 
-    // Marcar factura pagada solo si había deuda y tenemos factura_id
-    if (debtInfo.tiene_deuda && debtInfo.factura_id) {
+    // Marcar factura como pagada (SIEMPRE que haya factura_id — este endpoint sí funciona)
+    if (debtInfo.factura_id) {
       await wisphub.marcarFacturaPagada(debtInfo.factura_id).catch(err => {
         logger.warn('Could not mark invoice paid', { facturaId: debtInfo.factura_id, err: err.message });
       });

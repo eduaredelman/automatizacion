@@ -385,18 +385,33 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 // ─────────────────────────────────────────────────────────────
 
 const registrarPago = async (clienteId, paymentData) => {
-  const { data } = await withRetry(() =>
-    http.post('/pagos/', {
-      id_servicio: clienteId,
-      monto: paymentData.amount,
-      fecha_pago: paymentData.date,
-      medio_pago: paymentData.method,
-      codigo_operacion: paymentData.operationCode,
-      observacion: `Pago automático vía WhatsApp - ${paymentData.method} - Bot FiberPeru`,
-    })
-  );
-  logger.info('Payment registered in WispHub', { clienteId });
-  return data;
+  const body = {
+    id_servicio: clienteId,
+    monto: paymentData.amount,
+    fecha_pago: paymentData.date,
+    medio_pago: paymentData.method,
+    codigo_operacion: paymentData.operationCode,
+    observacion: `Pago automático vía WhatsApp - ${paymentData.method} - Bot FiberPeru`,
+  };
+
+  // WispHub puede tener el endpoint de pagos en distintas rutas según la versión
+  const endpoints = ['/pagos/', '/pagos/registrar/', '/v1/pagos/', '/clientes/pagar/'];
+
+  for (const endpoint of endpoints) {
+    try {
+      const { data } = await withRetry(() => http.post(endpoint, body));
+      logger.info('Payment registered in WispHub', { clienteId, endpoint });
+      return data;
+    } catch (err) {
+      if (err.response?.status === 404) {
+        logger.debug(`WispHub pagos endpoint not found: ${endpoint}`);
+        continue;
+      }
+      throw err; // Otro error → propagar
+    }
+  }
+
+  throw new Error('WispHub: no se encontró endpoint de registro de pagos (404 en todas las rutas)');
 };
 
 const marcarFacturaPagada = async (facturaId) => {
