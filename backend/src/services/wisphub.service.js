@@ -42,10 +42,20 @@ const buscarClientePorTelefono = async (phone) => {
           http.get('/clientes/', { params: { [field]: variant, limit: 1 } })
         );
         const results = data.results || data;
-        if (Array.isArray(results) && results.length > 0) {
+        if (!Array.isArray(results) || !results.length) continue;
+
+        const client = results[0];
+
+        // VALIDAR: el cliente devuelto debe tener realmente ese número.
+        // WispHub puede ignorar el filtro y devolver el primer cliente de la lista.
+        const returnedPhone = String(client[field] || '').replace(/\D/g, '');
+        if (returnedPhone === clean || returnedPhone === `51${clean}`) {
           logger.info('WispHub client found by phone', { field, variant });
-          return results[0];
+          return client;
         }
+        logger.debug('WispHub phone mismatch - ignorando resultado', {
+          field, variant, returned: returnedPhone, expected: clean,
+        });
       } catch (err) {
         logger.warn('WispHub phone search failed', { field, variant, error: err.message });
       }
