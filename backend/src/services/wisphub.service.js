@@ -431,58 +431,50 @@ const registrarPago = async (clienteId, paymentData) => {
 };
 
 // paymentData opcional: { amount, date, method, operationCode }
-// Con esos datos WispHub puede registrar el pago directamente al marcar la factura
 const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
-  const base = {
-    fecha_pago: paymentData.date || new Date().toISOString().split('T')[0],
-    ...(paymentData.method && { medio_pago: paymentData.method }),
-    ...(paymentData.operationCode && { codigo_operacion: paymentData.operationCode }),
-  };
+  const fechaPago = paymentData.date || new Date().toISOString().split('T')[0];
 
-  // Campos del modal de WispHub "Registrar Pago": forma_pago, importe, referencia, factura
-  const pagoBody = {
-    factura:    facturaId,
-    id_factura: facturaId,
-    importe:    paymentData.amount,
-    monto:      paymentData.amount,
-    forma_pago: paymentData.method || 'transferencia',
-    medio_pago: paymentData.method || 'transferencia',
-    referencia: paymentData.operationCode || '',
-    codigo_operacion: paymentData.operationCode || '',
-    fecha_pago: base.fecha_pago,
-  };
+  // Estrategia 1: GET factura actual → PUT con estado cambiado a Pagada
+  // (WispHub permite PUT pero no PATCH en /facturas/{id}/)
+  try {
+    const { data: facturaActual } = await http.get(`/facturas/${facturaId}/`);
+    logger.info('WispHub GET factura OK', { facturaId, estado: facturaActual.estado, saldo: facturaActual.saldo });
 
-  // Intentar primero con el endpoint /pagos/ usando ID de factura (igual que el modal UI),
-  // luego endpoint dedicado /pagar/, luego PATCH con distintos valores de estado
-  const attempts = [
-    { method: 'post',  url: '/pagos/',                        body: pagoBody },
-    { method: 'post',  url: `/facturas/${facturaId}/pagar/`,  body: { ...base, monto: paymentData.amount } },
-    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagada' } },
-    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'pagada' } },
-    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagado' } },
-    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { estado: 'Pagada' } },
-  ];
+    const putBody = {
+      ...facturaActual,
+      estado: 'Pagada',
+      fecha_pago: fechaPago,
+      ...(paymentData.operationCode && { referencia: paymentData.operationCode }),
+    };
 
-  for (const attempt of attempts) {
-    try {
-      const fn = attempt.method === 'post'
-        ? () => http.post(attempt.url, attempt.body)
-        : () => http.patch(attempt.url, attempt.body);
-      const { data } = await withRetry(fn);
-      logger.info('Invoice marked as paid in WispHub', {
-        facturaId, method: attempt.method, url: attempt.url, estado: attempt.body.estado,
-        response: JSON.stringify(data).substring(0, 200),
-      });
-      return data;
-    } catch (err) {
-      logger.warn(`marcarFacturaPagada intento fallido`, {
-        facturaId,
-        method: attempt.method,
-        url: attempt.url,
-        status: err.response?.status,
-        response: JSON.stringify(err.response?.data || {}).substring(0, 300),
-      });
-    }
+    const { data } = await http.put(`/facturas/${facturaId}/`, putBody);
+    logger.info('Invoice marked as paid via PUT', {
+      facturaId, response: JSON.stringify(data).substring(0, 200),
+    });
+    return data;
+  } catch (err) {
+    logger.warn('PUT /facturas/{id}/ falló', {
+      facturaId,
+      status: err.response?.status,
+      response: JSON.stringify(err.response?.data || {}).substring(0, 300),
+    });
+  }
+
+  // Estrategia 2: POST /facturas/{id}/pagar/ (endpoint custom de WispHub)
+  try {
+    const { data } = await http.post(`/facturas/${facturaId}/pagar/`, {
+      monto: paymentData.amount,
+      fecha_pago: fechaPago,
+      ...(paymentData.method && { forma_pago: paymentData.method }),
+      ...(paymentData.operationCode && { referencia: paymentData.operationCode }),
+    });
+    logger.info('Invoice marked as paid via POST /pagar/', { facturaId, response: JSON.stringify(data).substring(0, 200) });
+    return data;
+  } catch (err) {
+    logger.warn('POST /facturas/{id}/pagar/ falló', {
+      facturaId, status: err.response?.status,
+      response: JSON.stringify(err.response?.data || {}).substring(0, 300),
+    });
   }
 
   logger.warn('WispHub: no se pudo marcar factura como pagada con ningún intento', { facturaId });
