@@ -307,15 +307,19 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 
       clientInfo = { name: providedName, plan: clientPlan, wisphub_id: clientId };
 
-      // Obtener deuda real con desglose completo
-      // Si WispHub ya nos dio el precio del plan, usarlo como monto_mensual (más confiable que el de factura)
+      // Obtener deuda real — pasar usuario y nombre para validar que las facturas
+      // pertenecen al cliente correcto (WispHub puede devolver facturas de otro cliente)
       try {
-        const debtInfo = await wisphub.consultarDeuda(clientId);
+        const debtInfo = await wisphub.consultarDeuda(clientId, {
+          usuario: wispClient.usuario || null,
+          nombre:  clientName,
+        });
         clientInfo.debt_amount       = debtInfo.monto_deuda;
         clientInfo.tiene_deuda       = debtInfo.tiene_deuda;
         clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
-        // Prioridad: precio del plan del objeto cliente > monto de la primera factura
-        clientInfo.monto_mensual     = planPrice || debtInfo.monto_mensual;
+        // monto_mensual viene de las facturas validadas del cliente correcto
+        // Si no hay facturas válidas, usar precio_plan del objeto cliente como fallback
+        clientInfo.monto_mensual     = debtInfo.monto_mensual || planPrice || null;
         clientInfo.periodos          = debtInfo.periodos;
       } catch {}
 
@@ -461,12 +465,13 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id };
           if (cc.wisphub_id) {
             try {
-              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id);
-              clientInfo.debt_amount     = debtInfo.monto_deuda;
-              clientInfo.tiene_deuda     = debtInfo.tiene_deuda;
+              // Pasar nombre del cliente para validar facturas (evita recibir facturas de otro cliente)
+              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, { nombre: cc.name });
+              clientInfo.debt_amount       = debtInfo.monto_deuda;
+              clientInfo.tiene_deuda       = debtInfo.tiene_deuda;
               clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
-              clientInfo.monto_mensual   = debtInfo.monto_mensual;
-              clientInfo.periodos        = debtInfo.periodos;
+              clientInfo.monto_mensual     = debtInfo.monto_mensual;
+              clientInfo.periodos          = debtInfo.periodos;
             } catch {}
           }
         }
@@ -543,8 +548,14 @@ const buildPaymentResponse = (result) => {
     case 'client_not_found':
       return `No encontramos tu número registrado como cliente de Fiber Perú.\n\nSi ya tienes contrato: *932258382*\nSi deseas contratar: *940366709* 😊`;
 
-    case 'amount_mismatch':
-      return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide con tu deuda pendiente (*S/ ${debt.monto_deuda || 'N/A'}*).\n\nUn asesor revisará tu caso: *932258382*`;
+    case 'amount_mismatch': {
+      const monthly = debt.monto_mensual;
+      const total   = debt.monto_deuda;
+      const hint = monthly && monthly !== total
+        ? `Tu cuota mensual es *S/ ${monthly}* y tu deuda total es *S/ ${total}*.`
+        : `Tu deuda pendiente es *S/ ${total || 'N/A'}*.`;
+      return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide.\n\n${hint}\n\nUn asesor revisará tu caso: *932258382*`;
+    }
 
     case 'manual_review':
       return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅\n\n¿Consultas? *932258382*`;

@@ -216,7 +216,11 @@ const obtenerClientesConDeuda = async () => {
 // DEUDA
 // ─────────────────────────────────────────────────────────────
 
-const consultarDeuda = async (clienteId) => {
+// consultarDeuda acepta opts.usuario y opts.nombre para validar que las facturas
+// pertenecen al cliente correcto (WispHub a veces retorna facturas de otro cliente)
+const consultarDeuda = async (clienteId, opts = {}) => {
+  const { usuario: clienteUsuario = null, nombre: clienteNombre = null } = opts;
+
   // Todas las variantes posibles de estado pendiente en WispHub
   const estadosPendientes = new Set([
     'pendiente', 'no pagada', 'no pagado', 'vencida', 'vencido',
@@ -260,6 +264,46 @@ const consultarDeuda = async (clienteId) => {
       return true;
     });
 
+    // ─── VALIDAR que las facturas pertenecen al cliente correcto ─────────────
+    // WispHub a veces ignora el filtro y devuelve facturas de OTRO cliente.
+    // Validamos contra el usuario o nombre del cliente real.
+    if ((clienteUsuario || clienteNombre) && pendientes.length > 0) {
+      const normalize = s => (s || '').toLowerCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').trim();
+
+      const clienteUsuarioNorm = normalize(clienteUsuario);
+      const clienteNombreNorm  = normalize(clienteNombre);
+
+      const pendientesValidados = pendientes.filter(f => {
+        const facUsuario = f.cliente?.usuario || '';
+        const facNombre  = normalize(f.cliente?.nombre || '');
+        const facUsuarioNorm = normalize(facUsuario);
+
+        // Aceptar si usuario o nombre del cliente en la factura coincide
+        if (clienteUsuario && facUsuarioNorm && facUsuarioNorm === clienteUsuarioNorm) return true;
+        if (clienteNombre  && facNombre   && facNombre.includes(clienteNombreNorm.split(' ')[0])) return true;
+        return false;
+      });
+
+      if (pendientesValidados.length > 0) {
+        logger.info('WispHub facturas validadas por cliente', {
+          clienteId,
+          original: pendientes.length,
+          validadas: pendientesValidados.length,
+        });
+        pendientes = pendientesValidados;
+      } else {
+        // Si ninguna pasó la validación, es señal de que WispHub devolvió facturas de otro cliente
+        logger.warn('WispHub facturas descartadas: ninguna coincide con el cliente', {
+          clienteId, clienteUsuario, clienteNombre,
+          facturasRetornadas: pendientes.slice(0, 3).map(f => ({
+            id: f.id_factura, usuario: f.cliente?.usuario, nombre: f.cliente?.nombre,
+          })),
+        });
+        pendientes = []; // Sin facturas válidas para este cliente
+      }
+    }
+
     // Si no encontró nada con filtro de estado, traer todas y filtrar localmente
     if (pendientes.length === 0) {
       const { data } = await withRetry(() =>
@@ -278,24 +322,27 @@ const consultarDeuda = async (clienteId) => {
       });
     }
 
-    const montoTotal = pendientes.reduce((s, f) => s + parseFloat(f.monto || f.total || f.monto_total || 0), 0);
+    const montoTotal = pendientes.reduce((s, f) =>
+      s + parseFloat(f.total || f.sub_total || f.monto || f.monto_total || 0), 0);
 
-    // Monto de la primera factura (para mostrar cuánto cuesta el plan por mes)
-    const montoPrimera = parseFloat(pendientes[0]?.monto || pendientes[0]?.total || pendientes[0]?.monto_total || 0);
+    // Monto mensual = total de la primera factura válida (precio de una cuota)
+    const montoPrimera = parseFloat(
+      pendientes[0]?.total || pendientes[0]?.sub_total || pendientes[0]?.monto || 0
+    );
 
-    // Extraer períodos/descripción de cada factura para mostrar desglose
-    const periodos = pendientes.map(f => {
-      return f.periodo || f.mes || f.descripcion || f.concepto || f.fecha_vencimiento || f.fecha_emision || null;
+    // Períodos de las primeras 5 facturas (fecha_vencimiento como referencia)
+    const periodos = pendientes.slice(0, 5).map(f => {
+      if (f.fecha_vencimiento) return f.fecha_vencimiento;
+      if (f.fecha_emision)    return f.fecha_emision;
+      return null;
     }).filter(Boolean);
 
     logger.info('WispHub deuda resultado', {
       clienteId,
       pendientes: pendientes.length,
       monto: montoTotal,
-      montoPrimera,
-      // Log de todos los campos de la primera factura para diagnóstico
-      camposPrimeraFactura: pendientes[0] ? Object.keys(pendientes[0]) : [],
-      primeraFactura: pendientes[0] || null,
+      monto_mensual: montoPrimera,
+      periodos,
     });
 
     return {

@@ -135,15 +135,35 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
 
     logger.info('Debt info', { clientId, tiene_deuda: debtInfo.tiene_deuda, monto: debtInfo.monto_deuda });
 
-    // Si tiene deuda, validar que el monto coincida
+    // Si tiene deuda, validar que el monto coincida con la cuota mensual O con el total
+    // (el cliente puede pagar 1 mes o todo de golpe)
     if (debtInfo.tiene_deuda) {
-      const diff = Math.abs(aiVisionData.amount - debtInfo.monto_deuda);
+      const monthlyAmount = debtInfo.monto_mensual || 0;
+      const totalAmount   = debtInfo.monto_deuda;
+
+      const diffMonthly = monthlyAmount > 0
+        ? Math.abs(aiVisionData.amount - monthlyAmount)
+        : Infinity;
+      const diffTotal = Math.abs(aiVisionData.amount - totalAmount);
+
+      // Aceptar si coincide con la cuota mensual O con el total acumulado
+      const diff = Math.min(diffMonthly, diffTotal);
       await updatePayment({ amount_difference: diff });
+
+      logger.info('Amount validation', {
+        voucher: aiVisionData.amount,
+        monthly: monthlyAmount,
+        total: totalAmount,
+        diffMonthly,
+        diffTotal,
+        diff,
+        tolerance: AMOUNT_TOLERANCE,
+      });
 
       if (diff > AMOUNT_TOLERANCE) {
         await updatePayment({
           status: 'rejected',
-          rejection_reason: `Monto no coincide. Deuda: S/${debtInfo.monto_deuda}, Comprobante: S/${aiVisionData.amount}`,
+          rejection_reason: `Monto no coincide. Cuota mensual: S/${monthlyAmount}, Total deuda: S/${totalAmount}, Comprobante: S/${aiVisionData.amount}`,
         });
         return { status: 'amount_mismatch', paymentId, aiVisionData, debtInfo, difference: diff };
       }
