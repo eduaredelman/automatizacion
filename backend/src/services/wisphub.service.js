@@ -435,17 +435,32 @@ const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
   const fechaPago = paymentData.date || new Date().toISOString().split('T')[0];
 
   // Estrategia 1: GET factura actual → PUT con estado cambiado a Pagada
-  // (WispHub permite PUT pero no PATCH en /facturas/{id}/)
+  // (WispHub permite GET y PUT pero no PATCH en /facturas/{id}/)
   try {
     const { data: facturaActual } = await http.get(`/facturas/${facturaId}/`);
-    logger.info('WispHub GET factura OK', { facturaId, estado: facturaActual.estado, saldo: facturaActual.saldo });
+    logger.info('WispHub GET factura OK', {
+      facturaId,
+      estado: facturaActual.estado,
+      saldo: facturaActual.saldo,
+      // Loguear estructura para diagnosticar campos
+      keys: Object.keys(facturaActual),
+      nested: Object.entries(facturaActual)
+        .filter(([, v]) => v !== null && typeof v === 'object')
+        .map(([k]) => k),
+    });
 
+    // Filtrar solo campos escalares (no objetos/arrays anidados que causan 500)
+    const scalarBody = Object.fromEntries(
+      Object.entries(facturaActual).filter(([, v]) => v === null || typeof v !== 'object')
+    );
     const putBody = {
-      ...facturaActual,
+      ...scalarBody,
       estado: 'Pagada',
       fecha_pago: fechaPago,
       ...(paymentData.operationCode && { referencia: paymentData.operationCode }),
     };
+
+    logger.info('WispHub PUT body', { facturaId, fields: Object.keys(putBody), estado: putBody.estado });
 
     const { data } = await http.put(`/facturas/${facturaId}/`, putBody);
     logger.info('Invoice marked as paid via PUT', {
@@ -456,7 +471,7 @@ const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
     logger.warn('PUT /facturas/{id}/ falló', {
       facturaId,
       status: err.response?.status,
-      response: JSON.stringify(err.response?.data || {}).substring(0, 300),
+      response: JSON.stringify(err.response?.data || {}).substring(0, 400),
     });
   }
 
