@@ -458,9 +458,12 @@ const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
       });
       return data;
     } catch (err) {
-      logger.debug(`marcarFacturaPagada attempt failed`, {
-        facturaId, url: attempt.url, status: err.response?.status,
-        response: JSON.stringify(err.response?.data || {}).substring(0, 200),
+      logger.warn(`marcarFacturaPagada intento fallido`, {
+        facturaId,
+        method: attempt.method,
+        url: attempt.url,
+        status: err.response?.status,
+        response: JSON.stringify(err.response?.data || {}).substring(0, 300),
       });
     }
   }
