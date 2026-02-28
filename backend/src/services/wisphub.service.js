@@ -385,41 +385,88 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 // ─────────────────────────────────────────────────────────────
 
 const registrarPago = async (clienteId, paymentData) => {
-  const body = {
-    id_servicio: clienteId,
-    monto: paymentData.amount,
-    fecha_pago: paymentData.date,
-    medio_pago: paymentData.method,
-    codigo_operacion: paymentData.operationCode,
-    observacion: `Pago automático vía WhatsApp - ${paymentData.method} - Bot FiberPeru`,
-  };
-
-  // WispHub puede tener el endpoint de pagos en distintas rutas según la versión
-  const endpoints = ['/pagos/', '/pagos/registrar/', '/v1/pagos/', '/clientes/pagar/'];
+  // WispHub puede usar distintos nombres de campo según su versión
+  const bases = [
+    { id_servicio: clienteId, servicio: clienteId },
+    { id_servicio: clienteId },
+    { servicio: clienteId },
+  ];
+  const dateFields = { fecha_pago: paymentData.date, fecha: paymentData.date };
+  const endpoints = ['/pagos/', '/pagos/registrar/', '/abonos/', '/v1/pagos/'];
 
   for (const endpoint of endpoints) {
-    try {
-      const { data } = await withRetry(() => http.post(endpoint, body));
-      logger.info('Payment registered in WispHub', { clienteId, endpoint });
-      return data;
-    } catch (err) {
-      if (err.response?.status === 404) {
-        logger.debug(`WispHub pagos endpoint not found: ${endpoint}`);
-        continue;
+    for (const base of bases) {
+      const body = {
+        ...base,
+        monto: paymentData.amount,
+        ...dateFields,
+        medio_pago: paymentData.method,
+        forma_pago: paymentData.method,
+        codigo_operacion: paymentData.operationCode,
+        observacion: `Pago automático vía WhatsApp - Bot FiberPeru`,
+      };
+      try {
+        const { data } = await withRetry(() => http.post(endpoint, body));
+        logger.info('Payment registered in WispHub', { clienteId, endpoint, body });
+        return data;
+      } catch (err) {
+        const status = err.response?.status;
+        if (status === 404 || status === 405) {
+          logger.debug(`WispHub pagos endpoint not found: ${endpoint} (${status})`);
+          break; // Probar siguiente endpoint, no siguiente body
+        }
+        if (status === 400) {
+          logger.debug(`WispHub pagos 400 con body:`, { endpoint, fields: Object.keys(base) });
+          continue; // Probar siguiente variante de body
+        }
+        throw err; // Error inesperado → propagar
       }
-      throw err; // Otro error → propagar
     }
   }
 
-  throw new Error('WispHub: no se encontró endpoint de registro de pagos (404 en todas las rutas)');
+  throw new Error('WispHub: no se encontró endpoint de registro de pagos');
 };
 
-const marcarFacturaPagada = async (facturaId) => {
-  const { data } = await withRetry(() =>
-    http.patch(`/facturas/${facturaId}/`, { estado: 'Pagada' })
-  );
-  logger.info('Invoice marked as paid', { facturaId });
-  return data;
+// paymentData opcional: { amount, date, method, operationCode }
+// Con esos datos WispHub puede registrar el pago directamente al marcar la factura
+const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
+  const base = {
+    fecha_pago: paymentData.date || new Date().toISOString().split('T')[0],
+    ...(paymentData.method && { medio_pago: paymentData.method }),
+    ...(paymentData.operationCode && { codigo_operacion: paymentData.operationCode }),
+  };
+
+  // Intentar primero con endpoint dedicado /pagar/, luego PATCH con distintos valores de estado
+  const attempts = [
+    { method: 'post',  url: `/facturas/${facturaId}/pagar/`,  body: { ...base, monto: paymentData.amount } },
+    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagada' } },
+    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'pagada' } },
+    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'Pagado' } },
+    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { ...base, estado: 'PAGADA' } },
+    { method: 'patch', url: `/facturas/${facturaId}/`,        body: { estado: 'Pagada' } },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const fn = attempt.method === 'post'
+        ? () => http.post(attempt.url, attempt.body)
+        : () => http.patch(attempt.url, attempt.body);
+      const { data } = await withRetry(fn);
+      logger.info('Invoice marked as paid in WispHub', {
+        facturaId, method: attempt.method, url: attempt.url, estado: attempt.body.estado,
+        response: JSON.stringify(data).substring(0, 200),
+      });
+      return data;
+    } catch (err) {
+      logger.debug(`marcarFacturaPagada attempt failed`, {
+        facturaId, url: attempt.url, status: err.response?.status,
+        response: JSON.stringify(err.response?.data || {}).substring(0, 200),
+      });
+    }
+  }
+
+  logger.warn('WispHub: no se pudo marcar factura como pagada con ningún intento', { facturaId });
+  return null;
 };
 
 // ─────────────────────────────────────────────────────────────
