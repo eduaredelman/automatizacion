@@ -387,58 +387,32 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 // REGISTRAR PAGO
 // ─────────────────────────────────────────────────────────────
 
+// Endpoint confirmado en proyecto fiber-peru con Culqi:
+// POST /facturas/{id_servicio}/registrar-pago/
+// Campos: monto, forma_pago (int), accion (int), fecha_pago (YYYY-MM-DD HH:MM), referencia
 const registrarPago = async (clienteId, paymentData) => {
-  // WispHub puede usar distintos nombres de campo según su versión
-  const bases = [
-    { id_servicio: clienteId, servicio: clienteId },
-    { id_servicio: clienteId },
-    { servicio: clienteId },
-  ];
-  const dateFields = { fecha_pago: paymentData.date, fecha: paymentData.date };
-  const endpoints = ['/pagos/', '/pagos/registrar/', '/abonos/', '/v1/pagos/'];
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const fechaPago = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
-  for (const endpoint of endpoints) {
-    for (const base of bases) {
-      const body = {
-        ...base,
-        monto: paymentData.amount,
-        ...dateFields,
-        medio_pago: paymentData.method,
-        forma_pago: paymentData.method,
-        codigo_operacion: paymentData.operationCode,
-        observacion: `Pago automático vía WhatsApp - Bot FiberPeru`,
-      };
-      try {
-        const { data } = await withRetry(() => http.post(endpoint, body));
-        logger.info('Payment registered in WispHub', { clienteId, endpoint, body });
-        return data;
-      } catch (err) {
-        const status = err.response?.status;
-        if (status === 404 || status === 405) {
-          logger.debug(`WispHub pagos endpoint not found: ${endpoint} (${status})`);
-          break; // Probar siguiente endpoint, no siguiente body
-        }
-        if (status === 400) {
-          logger.debug(`WispHub pagos 400 con body:`, { endpoint, fields: Object.keys(base) });
-          continue; // Probar siguiente variante de body
-        }
-        throw err; // Error inesperado → propagar
-      }
-    }
-  }
+  const body = {
+    monto: paymentData.amount,
+    forma_pago: 1,   // ID del método de pago en WispHub
+    accion: 1,        // 1 = Pago completo
+    fecha_pago: fechaPago,
+    descripcion: `Pago vía WhatsApp - Bot FiberPeru - ${paymentData.method || ''}`,
+    referencia: paymentData.operationCode || '',
+  };
 
-  throw new Error('WispHub: no se encontró endpoint de registro de pagos');
+  const { data } = await http.post(`/facturas/${clienteId}/registrar-pago/`, body);
+  logger.info('WispHub: pago registrado exitosamente', { clienteId, facturaEndpoint: `/facturas/${clienteId}/registrar-pago/`, monto: body.monto });
+  return data;
 };
 
-// Nota: WispHub no expone endpoint de registro de pagos en su API REST externa.
-// El campo `estado` de facturas es de solo lectura (se calcula a partir de pagos internos).
-// Esta función intenta el PUT documentado pero acepta que WispHub puede no actualizar el estado.
+// marcarFacturaPagada ya no es necesaria — registrarPago marca la factura como pagada automáticamente
 const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
-  logger.info('WispHub: pago validado localmente, factura pendiente de actualización manual', {
-    facturaId,
-    amount: paymentData.amount,
-    note: 'WispHub REST API no expone endpoint de creación de pagos',
-  });
+  // El endpoint /facturas/{id_servicio}/registrar-pago/ ya actualiza el estado de la factura.
+  // Esta función queda como stub para compatibilidad.
   return null;
 };
 
