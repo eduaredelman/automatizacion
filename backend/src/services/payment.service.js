@@ -188,8 +188,11 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
         operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
       });
     } catch (regErr) {
-      logger.warn('WispHub registrarPago falló (no fatal) — se marcará la factura como pagada igualmente', {
-        clientId, error: regErr.message,
+      logger.warn('WispHub registrarPago falló (no fatal)', {
+        clientId,
+        error: regErr.message,
+        status: regErr.response?.status,
+        wisphubResponse: JSON.stringify(regErr.response?.data || {}).substring(0, 400),
       });
     }
 
