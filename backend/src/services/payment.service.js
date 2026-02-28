@@ -129,8 +129,17 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       );
     }
 
-    // Consultar deuda (informativo — ya no bloquea el registro)
-    const debtInfo = await wisphub.consultarDeuda(clientId);
+    // Consultar deuda — pasar nombre del cliente para validar facturas
+    // (payment.service no tiene wispClient, lo buscamos en clients local)
+    let debtOpts = {};
+    try {
+      const clientRow = await query(
+        'SELECT name FROM clients WHERE wisphub_id = $1',
+        [String(clientId)]
+      );
+      if (clientRow.rows[0]?.name) debtOpts.nombre = clientRow.rows[0].name;
+    } catch {}
+    const debtInfo = await wisphub.consultarDeuda(clientId, debtOpts);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
     logger.info('Debt info', { clientId, tiene_deuda: debtInfo.tiene_deuda, monto: debtInfo.monto_deuda });
