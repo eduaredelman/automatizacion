@@ -338,4 +338,123 @@ const deleteQuickReply = async (req, res) => {
   }
 };
 
-module.exports = { listChats, getChat, sendMessage, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply };
+// POST /api/chats/:id/send-media - Agent sends media file to client
+const sendMedia = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const file = req.file;
+    const caption = req.body.caption?.trim() || '';
+
+    if (!file) return error(res, 'Archivo requerido', 400);
+
+    const convResult = await query('SELECT * FROM conversations WHERE id = $1', [id]);
+    if (!convResult.rows.length) return error(res, 'Conversación no encontrada', 404);
+    const conv = convResult.rows[0];
+
+    // Determinar tipo de media para WhatsApp API
+    const mimeToType = (mime) => {
+      if (mime.startsWith('image/')) return 'image';
+      if (mime.startsWith('audio/')) return 'audio';
+      return 'document';
+    };
+    const mediaType = mimeToType(file.mimetype);
+
+    // Subir archivo a WhatsApp → obtener media_id
+    const mediaId = await whatsapp.uploadMedia(file.buffer, file.mimetype, file.originalname);
+
+    // Enviar al cliente vía WhatsApp
+    const waResult = await whatsapp.sendMediaMessage(conv.phone, mediaId, mediaType, caption);
+
+    // Guardar en messages
+    const msgResult = await query(
+      `INSERT INTO messages
+         (conversation_id, whatsapp_id, direction, sender_type, agent_id, message_type, body, media_mime, media_filename, media_size, whatsapp_status)
+       VALUES ($1, $2, 'outbound', 'agent', $3, $4, $5, $6, $7, $8, 'sent') RETURNING *`,
+      [id, waResult.messages?.[0]?.id || null, req.agent.id, mediaType, caption || null, file.mimetype, file.originalname, file.size]
+    );
+
+    const lastMsg = caption || `[${mediaType}]`;
+    await query(
+      `UPDATE conversations SET last_message = $1, last_message_at = NOW() WHERE id = $2`,
+      [lastMsg.substring(0, 100), id]
+    );
+
+    const savedMsg = { ...msgResult.rows[0], agent_name: req.agent?.name };
+    emitToConversation(id, 'message', savedMsg);
+    emitToAgents('new_message', {
+      conversation: { ...conv, last_message: lastMsg, last_message_at: new Date().toISOString() },
+      message: savedMsg,
+    });
+
+    return success(res, savedMsg, 'Archivo enviado');
+  } catch (err) {
+    logger.error('sendMedia error', { error: err.message });
+    return error(res, 'Error al enviar archivo');
+  }
+};
+
+// POST /api/chats/start - Agent initiates a new conversation
+const startNewChat = async (req, res) => {
+  try {
+    let { phone, message } = req.body;
+    if (!phone?.trim() || !message?.trim()) return error(res, 'Teléfono y mensaje requeridos', 400);
+
+    // Normalizar teléfono: quitar espacios, guiones, paréntesis, +
+    phone = phone.trim().replace(/[\s\-\(\)\+]/g, '');
+    // Agregar prefijo Perú si no tiene código de país
+    if (!phone.startsWith('51') && phone.length <= 9) {
+      phone = '51' + phone;
+    }
+    message = message.trim();
+
+    // Verificar si ya existe conversación con ese número
+    const existingResult = await query('SELECT * FROM conversations WHERE phone = $1 LIMIT 1', [phone]);
+    let conversation;
+    let created = false;
+
+    if (existingResult.rows.length) {
+      conversation = existingResult.rows[0];
+    } else {
+      const newConv = await query(
+        `INSERT INTO conversations (phone, display_name, status, assigned_to, last_message, last_message_at, unread_count)
+         VALUES ($1, $1, 'human', $2, $3, NOW(), 0) RETURNING *`,
+        [phone, req.agent.id, message.substring(0, 100)]
+      );
+      conversation = newConv.rows[0];
+      created = true;
+    }
+
+    // Enviar mensaje vía WhatsApp
+    const waResult = await whatsapp.sendTextMessage(phone, message);
+
+    // Guardar en messages
+    const msgResult = await query(
+      `INSERT INTO messages (conversation_id, whatsapp_id, direction, sender_type, agent_id, message_type, body, whatsapp_status)
+       VALUES ($1, $2, 'outbound', 'agent', $3, 'text', $4, 'sent') RETURNING *`,
+      [conversation.id, waResult.messages?.[0]?.id || null, req.agent.id, message]
+    );
+
+    // Si era conversación existente, actualizarla a modo humano
+    if (!created) {
+      await query(
+        `UPDATE conversations SET last_message = $1, last_message_at = NOW(), status = 'human', assigned_to = $2 WHERE id = $3`,
+        [message.substring(0, 100), req.agent.id, conversation.id]
+      );
+    }
+
+    const savedMsg = { ...msgResult.rows[0], agent_name: req.agent?.name };
+    emitToConversation(conversation.id, 'message', savedMsg);
+    emitToAgents('new_message', {
+      conversation: { ...conversation, status: 'human', last_message: message, last_message_at: new Date().toISOString() },
+      message: savedMsg,
+    });
+    emitToAgents('conversation_update', { conversationId: conversation.id, status: 'human' });
+
+    return success(res, { conversationId: conversation.id, phone, created }, 'Mensaje enviado');
+  } catch (err) {
+    logger.error('startNewChat error', { error: err.message });
+    return error(res, 'Error al iniciar conversación');
+  }
+};
+
+module.exports = { listChats, getChat, sendMessage, sendMedia, startNewChat, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply };

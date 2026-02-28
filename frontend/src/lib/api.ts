@@ -61,6 +61,13 @@ export const api = {
     getApi().patch(`/chats/${id}/name`, { name }),
   archiveChat: (id: string) =>
     getApi().delete(`/chats/${id}`),
+  sendMedia: (chatId: string, formData: FormData) =>
+    getApi().post(`/chats/${chatId}/send-media`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
+    }),
+  startChat: (phone: string, message: string) =>
+    getApi().post('/chats/start', { phone, message }),
   getQuickReplies: () =>
     getApi().get('/chats/quick-replies'),
   createQuickReply: (title: string, body: string, tags?: string[]) =>

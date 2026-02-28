@@ -79,6 +79,50 @@ const downloadMedia = async (mediaId) => {
   }
 };
 
+// Sube un archivo al servidor de WhatsApp y retorna el media_id
+const uploadMedia = async (fileBuffer, mimeType, filename) => {
+  const FormData = require('form-data');
+  const form = new FormData();
+  form.append('file', fileBuffer, { filename, contentType: mimeType });
+  form.append('type', mimeType);
+  form.append('messaging_product', 'whatsapp');
+
+  try {
+    const { data } = await axios.post(`${WA_BASE()}/media`, form, {
+      headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, ...form.getHeaders() },
+    });
+    logger.info('Media uploaded to WhatsApp', { mediaId: data.id, filename });
+    return data.id;
+  } catch (err) {
+    logger.error('Failed to upload media to WhatsApp', { error: err.response?.data || err.message });
+    throw err;
+  }
+};
+
+// Envía un mensaje multimedia al cliente
+const sendMediaMessage = async (phone, mediaId, mediaType, caption = '') => {
+  const typePayload = {
+    image:    { image:    { id: mediaId, caption } },
+    document: { document: { id: mediaId, caption, filename: caption || 'documento' } },
+    audio:    { audio:    { id: mediaId } },
+  };
+
+  try {
+    const { data } = await axios.post(`${WA_BASE()}/messages`, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: mediaType,
+      ...typePayload[mediaType],
+    }, { headers: WA_HEADERS() });
+    logger.info('WhatsApp media message sent', { phone, mediaId, mediaType });
+    return data;
+  } catch (err) {
+    logger.error('Failed to send WhatsApp media message', { phone, error: err.response?.data || err.message });
+    throw err;
+  }
+};
+
 const markAsRead = async (messageId) => {
   try {
     await axios.post(`${WA_BASE()}/messages`, {
@@ -122,6 +166,8 @@ module.exports = {
   sendTextMessage,
   sendTemplateMessage,
   downloadMedia,
+  uploadMedia,
+  sendMediaMessage,
   markAsRead,
   parseWebhookPayload,
 };

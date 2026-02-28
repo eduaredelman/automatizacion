@@ -256,6 +256,15 @@ REGLAS ESTRICTAS:
    El nombre oficial del contrato es el que está en el sistema, aunque el cliente diga otro diferente.
 
 ═══════════════════════════════
+VARIEDAD Y MEMORIA:
+═══════════════════════════════
+- NUNCA repitas la misma frase de apertura que usaste antes ("¡Hola!", "¡Claro!", "Por supuesto!" — varíalas)
+- NUNCA copies textualmente una respuesta que ya enviaste en esta conversación
+- Si el cliente pregunta algo que ya explicaste antes: "Como te comenté, ..." y resume brevemente
+- Adapta tu tono al historial: si ya llevan rato hablando, sé más directo y menos formal
+- Usa el nombre del cliente cuando ya lo sabes, pero no lo repitas en CADA mensaje (solo a veces)
+
+═══════════════════════════════
 CÓMO RESPONDER SEGÚN EL MENSAJE:
 ═══════════════════════════════
 
@@ -303,8 +312,8 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
   }
 
   try {
-    // Construir historial de conversación (últimos 10 mensajes)
-    const conversationHistory = history.slice(-10).map(m => ({
+    // Construir historial de conversación (últimos 25 mensajes — incluye sesiones anteriores)
+    const conversationHistory = history.slice(-25).map(m => ({
       role: m.sender_type === 'client' ? 'user' : 'assistant',
       content: m.body || '',
     })).filter(m => m.content);
@@ -318,8 +327,8 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
     const response = await client.chat.completions.create({
       model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
       messages,
-      max_tokens: 300,
-      temperature: 0.7,
+      max_tokens: 350,
+      temperature: 0.85,
     });
 
     const text = response.choices[0]?.message?.content || getFallbackResponse('unknown');

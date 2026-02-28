@@ -7,6 +7,16 @@ const logger = require('../utils/logger');
 const { getPaymentBlock } = require('../config/payment-info');
 
 // ─────────────────────────────────────────────────────────────
+// HORARIO DE ATENCIÓN (Lun–Sáb, 8:00 AM – 6:00 PM Lima)
+// ─────────────────────────────────────────────────────────────
+const isWithinBusinessHours = () => {
+  const limaTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+  const hour = limaTime.getHours(); // 0-23
+  const day  = limaTime.getDay();   // 0=Dom, 6=Sáb
+  return hour >= 8 && hour < 18 && day >= 1 && day <= 6;
+};
+
+// ─────────────────────────────────────────────────────────────
 // VERIFICAR WEBHOOK (GET)
 // ─────────────────────────────────────────────────────────────
 
@@ -161,7 +171,7 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       const historyResult = await query(
         `SELECT sender_type, body FROM messages
          WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
-         ORDER BY created_at DESC LIMIT 5`,
+         ORDER BY created_at DESC LIMIT 20`,
         [conversation.id]
       );
       const history = historyResult.rows.reverse();
@@ -420,18 +430,31 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       return;
     }
 
-    // 2. Historial para IA
+    // 2. Historial para IA (30 mensajes — incluye sesiones anteriores)
     const historyResult = await query(
       `SELECT sender_type, body FROM messages
        WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
-       ORDER BY created_at DESC LIMIT 15`,
+       ORDER BY created_at DESC LIMIT 30`,
       [conversation.id]
     );
     const history = historyResult.rows.reverse();
 
     // 3. ¿El cliente ya proporcionó su nombre?
-    //    client_id → WispHub vinculado | bot_intent = 'identity_ok' → nombre guardado sin WispHub
-    const hasIdentity = !!(conversation.client_id || conversation.bot_intent === 'identity_ok');
+    //    Prioridad: client_id (WispHub) > bot_intent='identity_ok' > display_name real (fallback conv. antiguas)
+    const rawDN = conversation.display_name || '';
+    const displayNameIsReal = rawDN &&
+      rawDN !== conversation.phone &&
+      rawDN.trim().length > 2 &&
+      /[A-Za-zÀ-ÿ]/.test(rawDN); // al menos una letra → no es solo número de teléfono
+
+    const hasIdentity = !!(
+      conversation.client_id ||
+      conversation.bot_intent === 'identity_ok' ||
+      // Fallback: display_name real guardado pero bot_intent quedó null (conversaciones antiguas / reinicio)
+      (displayNameIsReal &&
+        conversation.bot_intent !== 'awaiting_identity' &&
+        conversation.bot_intent !== 'awaiting_payment_name')
+    );
 
     if (!hasIdentity) {
       // Pedir nombre siempre — nunca auto-identificar por teléfono
@@ -440,6 +463,11 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       await whatsapp.sendTextMessage(phone, response);
       await saveOutboundMessage(conversation.id, response, 'bot');
       return;
+    }
+
+    // Si era una conv. antigua con display_name real pero sin bot_intent → marcarla ahora
+    if (displayNameIsReal && !conversation.client_id && conversation.bot_intent !== 'identity_ok') {
+      await query(`UPDATE conversations SET bot_intent = 'identity_ok' WHERE id = $1`, [conversation.id]);
     }
 
     // 4. Obtener clientInfo del cliente confirmado (de la BD, no de WispHub por teléfono)
@@ -484,6 +512,12 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     // 5. ¿Quiere hablar con humano?
     const quiereHumano = /asesor|agente|humano|persona|hablar con alguien|no entiendo/i.test(text);
     if (quiereHumano) {
+      if (!isWithinBusinessHours()) {
+        const msg = '🕐 Nuestros asesores atienden de *8:00 AM a 6:00 PM* de lunes a sábado. Por el momento el bot puede ayudarte con pagos y consultas. ¿En qué te puedo ayudar?';
+        await whatsapp.sendTextMessage(phone, msg);
+        await saveOutboundMessage(conversation.id, msg, 'bot');
+        return;
+      }
       await escalateToHuman(conversation, 'Cliente solicitó asesor humano');
       const response = '👨‍💼 Te voy a conectar con un asesor humano ahora mismo. Un momento por favor...';
       await whatsapp.sendTextMessage(phone, response);

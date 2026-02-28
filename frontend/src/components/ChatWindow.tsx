@@ -11,7 +11,7 @@ import {
   ArrowLeft, Bot, User, Send, UserCheck, Wifi,
   CreditCard, Phone, CheckCheck, Clock,
   AlertTriangle, CheckCircle, XCircle, Loader2, Image as ImageIcon,
-  Pencil, Check, X, Zap, Mic
+  Pencil, Check, X, Zap, Mic, Paperclip, FileText, ShieldCheck
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -24,6 +24,7 @@ interface Conversation {
   wisphub_id?: string;
   plan?: string;
   debt_amount?: number;
+  bot_intent?: string;
 }
 
 interface Message {
@@ -84,7 +85,9 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [quickReplies, setQuickReplies] = useState<{ id: string; title: string; body: string }[]>([]);
   const [qrSearch, setQrSearch] = useState('');
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const convMessages = messages[conversation.id] || [];
 
@@ -157,6 +160,40 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
     } finally {
       setSending(false);
     }
+  };
+
+  const handleSendMedia = async () => {
+    if (!mediaFile || sending) return;
+    if (mediaFile.size > 25 * 1024 * 1024) {
+      alert('El archivo supera el límite de 25 MB.');
+      return;
+    }
+    setSending(true);
+    const formData = new FormData();
+    formData.append('file', mediaFile);
+    if (text.trim()) formData.append('caption', text.trim());
+    try {
+      const { data } = await api.sendMedia(conversation.id, formData);
+      addMessage(data.data);
+      setMediaFile(null);
+      setText('');
+    } catch (err) {
+      console.error('Failed to send media:', err);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      alert('El archivo supera el límite de 25 MB.');
+      return;
+    }
+    setMediaFile(file);
+    // Reset input so same file can be re-selected
+    e.target.value = '';
   };
 
   const handleTakeover = async () => {
@@ -240,10 +277,20 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
               <button onClick={() => setEditingName(false)} className="text-slate-400 hover:text-slate-300 p-0.5"><X className="w-4 h-4" /></button>
             </div>
           ) : (
-            <div className="flex items-center gap-1 group">
+            <div className="flex items-center gap-1.5 group">
               <h3 className="font-semibold text-white text-sm truncate">
                 {conversation.display_name || conversation.phone}
               </h3>
+              {conversation.wisphub_id && (
+                <span className="shrink-0 text-[9px] bg-green-500/20 text-green-400 border border-green-500/30 rounded px-1 py-0.5 flex items-center gap-0.5">
+                  <ShieldCheck className="w-2.5 h-2.5" />WispHub
+                </span>
+              )}
+              {!conversation.wisphub_id && conversation.bot_intent === 'identity_ok' && (
+                <span className="shrink-0 text-[9px] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 rounded px-1 py-0.5">
+                  📝 Declarado
+                </span>
+              )}
               <button
                 onClick={startEditing}
                 className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition-opacity p-0.5"
@@ -364,7 +411,40 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
                 </div>
               )}
 
-              <form onSubmit={handleSend} className="flex gap-2">
+              {/* Preview de archivo adjunto */}
+              {mediaFile && isHuman && (
+                <div className="flex items-center gap-2 mb-2 px-3 py-2 bg-slate-800/60 rounded-xl border border-slate-700/40">
+                  {mediaFile.type.startsWith('image/') ? (
+                    <ImageIcon className="w-4 h-4 text-blue-400 shrink-0" />
+                  ) : mediaFile.type.startsWith('audio/') ? (
+                    <Mic className="w-4 h-4 text-purple-400 shrink-0" />
+                  ) : (
+                    <FileText className="w-4 h-4 text-orange-400 shrink-0" />
+                  )}
+                  <span className="text-xs text-slate-300 truncate flex-1">{mediaFile.name}</span>
+                  <span className="text-[10px] text-slate-500 shrink-0">
+                    {(mediaFile.size / 1024 / 1024).toFixed(1)} MB
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMediaFile(null)}
+                    className="text-slate-500 hover:text-red-400 p-0.5 shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Input oculto para seleccionar archivo */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,.pdf,audio/*"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+
+              <form onSubmit={mediaFile ? (e) => { e.preventDefault(); handleSendMedia(); } : handleSend} className="flex gap-2">
                 {isHuman && (
                   <button
                     type="button"
@@ -375,18 +455,28 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
                     <Zap className="w-4 h-4" />
                   </button>
                 )}
+                {isHuman && (
+                  <button
+                    type="button"
+                    onClick={() => { fileInputRef.current?.click(); setShowQuickReplies(false); }}
+                    className={clsx('btn-ghost px-3 py-2.5 shrink-0', mediaFile ? 'text-blue-400 bg-blue-400/10' : 'text-slate-500 hover:text-blue-400')}
+                    title="Adjuntar imagen, PDF o audio (máx. 25 MB)"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+                )}
                 <input
                   type="text"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   disabled={!isHuman}
-                  placeholder={isHuman ? 'Escribe un mensaje...' : 'Toma control para responder'}
+                  placeholder={isHuman ? (mediaFile ? 'Escribe un pie de foto (opcional)...' : 'Escribe un mensaje...') : 'Toma control para responder'}
                   className="input-field py-2.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
                   onFocus={() => setShowQuickReplies(false)}
                 />
                 <button
                   type="submit"
-                  disabled={!isHuman || !text.trim() || sending}
+                  disabled={!isHuman || (!text.trim() && !mediaFile) || sending}
                   className="btn-primary px-4 py-2.5 shrink-0"
                 >
                   {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
