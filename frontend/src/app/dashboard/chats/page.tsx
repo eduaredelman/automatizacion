@@ -37,6 +37,18 @@ export default function ChatsPage() {
     return () => clearInterval(interval);
   }, [loadChats]);
 
+  const handleArchive = useCallback(async (id: string) => {
+    try {
+      await api.archiveChat(id);
+      // Si estaba seleccionado, deseleccionar
+      if (activeConversationId === id) setActiveConversation(null);
+      // Remover de la lista local inmediatamente
+      setConversations(conversations.filter(c => c.id !== id));
+    } catch (err) {
+      console.error('Archive failed:', err);
+    }
+  }, [activeConversationId, conversations, setActiveConversation, setConversations]);
+
   // Usar la conversación activa de la lista o la última conocida (evita que desaparezca al refrescar)
   const foundConversation = conversations.find(c => c.id === activeConversationId);
   const activeConversation = foundConversation ?? lastActiveRef.current ?? undefined;
@@ -58,6 +70,7 @@ export default function ChatsPage() {
           activeId={activeConversationId}
           onSelect={(id) => setActiveConversation(id)}
           onRefresh={loadChats}
+          onArchive={handleArchive}
         />
       </div>
 

@@ -41,7 +41,18 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
   const { rows: [pmtRow] } = await query('SELECT * FROM payments WHERE id = $1', [paymentId]);
   if (!pmtRow) throw new Error(`Payment ${paymentId} not found`);
 
-  const aiVisionData = pmtRow.ocr_raw ? JSON.parse(pmtRow.ocr_raw) : null;
+  // FIX: PostgreSQL JSONB devuelve objeto ya parseado; JSON.parse() sobre objeto falla.
+  // Manejar ambos casos: string (texto plano) y objeto (JSONB auto-parseado).
+  let aiVisionData = null;
+  try {
+    const raw = pmtRow.ocr_raw;
+    if (raw) {
+      aiVisionData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    }
+  } catch (parseErr) {
+    logger.error('Failed to parse ocr_raw', { paymentId, error: parseErr.message });
+    aiVisionData = null;
+  }
 
   const updatePayment = (fields) => {
     const keys = Object.keys(fields);
@@ -63,20 +74,23 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       return { status: 'manual_review', paymentId, aiVisionData };
     }
 
-    // Duplicate check
+    // Duplicate check — guarda también el ID del pago original para mostrar en el CRM
     if (aiVisionData.operationCode) {
       const dup = await query(
-        `SELECT id FROM payments WHERE operation_code = $1 AND id != $2 AND status = 'validated'`,
+        `SELECT id, created_at, amount FROM payments WHERE operation_code = $1 AND id != $2 AND status = 'validated'`,
         [aiVisionData.operationCode, paymentId]
       );
       if (dup.rows.length > 0) {
-        await updatePayment({ status: 'duplicate', rejection_reason: `Código duplicado: ${aiVisionData.operationCode}` });
-        return { status: 'duplicate', paymentId };
+        const original = dup.rows[0];
+        await updatePayment({
+          status: 'duplicate',
+          rejection_reason: `Comprobante duplicado. Código: ${aiVisionData.operationCode} | Pago original ID: ${original.id}`,
+        });
+        return { status: 'duplicate', paymentId, originalPaymentId: original.id };
       }
     }
 
     // WispHub client lookup
-    // Prioridad: usar wisphubClientId ya confirmado (evita búsqueda por teléfono que puede devolver cliente incorrecto)
     let client = null;
     let clientId = null;
 
@@ -98,35 +112,44 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       return { status: 'client_not_found', paymentId };
     }
 
-    await query(
-      `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)
-       VALUES ($1,$2,$3,$4,NOW())
-       ON CONFLICT (wisphub_id) DO UPDATE SET phone=$2, name=$3, service_id=$4, last_synced_at=NOW()`,
-      [String(clientId), clientPhone, client.nombre || client.name || 'N/A', String(clientId)]
-    );
+    // Upsert cliente (sin sobreescribir nombre cuando ya está confirmado)
+    if (wisphubClientId) {
+      await query(
+        `INSERT INTO clients (wisphub_id, phone, service_id, last_synced_at)
+         VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (wisphub_id) DO UPDATE SET phone=$2, last_synced_at=NOW()`,
+        [String(clientId), clientPhone, String(clientId)]
+      );
+    } else {
+      await query(
+        `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)
+         VALUES ($1,$2,$3,$4,NOW())
+         ON CONFLICT (wisphub_id) DO UPDATE SET phone=$2, name=$3, service_id=$4, last_synced_at=NOW()`,
+        [String(clientId), clientPhone, client.nombre || client.name || 'N/A', String(clientId)]
+      );
+    }
 
-    // Debt check
+    // Consultar deuda (informativo — ya no bloquea el registro)
     const debtInfo = await wisphub.consultarDeuda(clientId);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
-    if (!debtInfo.tiene_deuda) {
-      await updatePayment({ status: 'manual_review', rejection_reason: 'Sin facturas pendientes en el sistema' });
-      return { status: 'no_debt', paymentId, aiVisionData, debtInfo };
+    logger.info('Debt info', { clientId, tiene_deuda: debtInfo.tiene_deuda, monto: debtInfo.monto_deuda });
+
+    // Si tiene deuda, validar que el monto coincida
+    if (debtInfo.tiene_deuda) {
+      const diff = Math.abs(aiVisionData.amount - debtInfo.monto_deuda);
+      await updatePayment({ amount_difference: diff });
+
+      if (diff > AMOUNT_TOLERANCE) {
+        await updatePayment({
+          status: 'rejected',
+          rejection_reason: `Monto no coincide. Deuda: S/${debtInfo.monto_deuda}, Comprobante: S/${aiVisionData.amount}`,
+        });
+        return { status: 'amount_mismatch', paymentId, aiVisionData, debtInfo, difference: diff };
+      }
     }
 
-    // Amount validation
-    const diff = Math.abs(aiVisionData.amount - debtInfo.monto_deuda);
-    await updatePayment({ amount_difference: diff });
-
-    if (diff > AMOUNT_TOLERANCE) {
-      await updatePayment({
-        status: 'rejected',
-        rejection_reason: `Monto no coincide. Deuda: S/${debtInfo.monto_deuda}, Comprobante: S/${aiVisionData.amount}`,
-      });
-      return { status: 'amount_mismatch', paymentId, aiVisionData, debtInfo, difference: diff };
-    }
-
-    // Register in WispHub
+    // Registrar pago en WispHub SIEMPRE (con o sin deuda detectada)
     const wispResult = await wisphub.registrarPago(clientId, {
       amount: aiVisionData.amount,
       date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
@@ -134,7 +157,8 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
     });
 
-    if (debtInfo.factura_id) {
+    // Marcar factura pagada solo si había deuda y tenemos factura_id
+    if (debtInfo.tiene_deuda && debtInfo.factura_id) {
       await wisphub.marcarFacturaPagada(debtInfo.factura_id).catch(err => {
         logger.warn('Could not mark invoice paid', { facturaId: debtInfo.factura_id, err: err.message });
       });
@@ -148,8 +172,11 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       validated_at: new Date().toISOString(),
     });
 
-    logger.info('Payment validated', { paymentId, amount: aiVisionData.amount, clientId });
-    return { status: 'success', paymentId, aiVisionData, debtInfo, wispResult };
+    logger.info('Payment validated and registered in WispHub', { paymentId, amount: aiVisionData.amount, clientId });
+
+    // Retornar status diferente si no había deuda (para que el bot avise de manera distinta)
+    const finalStatus = debtInfo.tiene_deuda ? 'success' : 'registered_no_debt';
+    return { status: finalStatus, paymentId, aiVisionData, debtInfo, wispResult };
 
   } catch (err) {
     logger.error('Payment finalization error', { paymentId, error: err.message });
@@ -163,7 +190,6 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
 
 // ─────────────────────────────────────────────────────────────
 // Mantener compatibilidad: flujo completo en un solo paso
-// (usado cuando identidad ya está confirmada al llegar la imagen)
 // ─────────────────────────────────────────────────────────────
 const processVoucher = async ({ conversationId, messageId, imagePath, clientPhone, aiVisionData = null }) => {
   const paymentId = await savePendingVoucher({ conversationId, messageId, imagePath, aiVisionData });

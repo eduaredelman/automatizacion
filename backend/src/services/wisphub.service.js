@@ -280,15 +280,30 @@ const consultarDeuda = async (clienteId) => {
 
     const montoTotal = pendientes.reduce((s, f) => s + parseFloat(f.monto || f.total || f.monto_total || 0), 0);
 
+    // Monto de la primera factura (para mostrar cuánto cuesta el plan por mes)
+    const montoPrimera = parseFloat(pendientes[0]?.monto || pendientes[0]?.total || pendientes[0]?.monto_total || 0);
+
+    // Extraer períodos/descripción de cada factura para mostrar desglose
+    const periodos = pendientes.map(f => {
+      return f.periodo || f.mes || f.descripcion || f.concepto || f.fecha_vencimiento || f.fecha_emision || null;
+    }).filter(Boolean);
+
     logger.info('WispHub deuda resultado', {
       clienteId,
       pendientes: pendientes.length,
       monto: montoTotal,
+      montoPrimera,
+      // Log de todos los campos de la primera factura para diagnóstico
+      camposPrimeraFactura: pendientes[0] ? Object.keys(pendientes[0]) : [],
+      primeraFactura: pendientes[0] || null,
     });
 
     return {
       tiene_deuda: pendientes.length > 0,
       monto_deuda: parseFloat(montoTotal.toFixed(2)),
+      monto_mensual: parseFloat(montoPrimera.toFixed(2)),
+      cantidad_facturas: pendientes.length,
+      periodos,
       factura_id: pendientes[0]?.id_factura || pendientes[0]?.id || null,
       facturas: pendientes,
     };

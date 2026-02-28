@@ -130,6 +130,46 @@ IMPORTANTE:
 };
 
 // ─────────────────────────────────────────────────────────────
+// TRANSCRIPCIÓN DE AUDIO (OpenAI Whisper)
+// ─────────────────────────────────────────────────────────────
+
+const transcribeAudio = async (audioPath) => {
+  if (!process.env.OPENAI_API_KEY) {
+    logger.warn('OpenAI not configured for audio transcription');
+    return null;
+  }
+
+  try {
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('file', fs.createReadStream(audioPath));
+    form.append('model', 'whisper-1');
+    form.append('language', 'es');
+
+    const { data } = await axios.post(
+      'https://api.openai.com/v1/audio/transcriptions',
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        timeout: 30000,
+      }
+    );
+
+    const transcript = data.text || null;
+    if (transcript) {
+      logger.info('Audio transcribed successfully', { length: transcript.length });
+    }
+    return transcript;
+  } catch (err) {
+    logger.error('Audio transcription failed', { error: err.message });
+    return null;
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
 // DETECCIÓN DE INTENCIÓN (simple fallback)
 // ─────────────────────────────────────────────────────────────
 
@@ -158,15 +198,33 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
   const client = getOpenAI();
 
   // Información del cliente para contexto
-  const clientName = clientInfo?.name || clientInfo?.nombre;
-  const clientPlan = clientInfo?.plan;
-  const clientDebt = clientInfo?.debt_amount ?? clientInfo?.deuda;
+  const clientName  = clientInfo?.name || clientInfo?.nombre;
+  const clientPlan  = clientInfo?.plan;
+  const clientDebt  = clientInfo?.debt_amount ?? clientInfo?.deuda;
+  const cantFacturas   = clientInfo?.cantidad_facturas ?? null;
+  const montoMensual   = clientInfo?.monto_mensual ?? null;
+  const periodos       = clientInfo?.periodos ?? [];
+
+  // Construir desglose de deuda legible
+  let deudaTexto = 'sin datos en este momento';
+  if (clientDebt != null) {
+    if (clientDebt === 0) {
+      deudaTexto = 'S/ 0.00 — cuenta al día ✅';
+    } else if (cantFacturas && montoMensual) {
+      const periodoStr = periodos.length > 0 ? ` (${periodos.join(', ')})` : '';
+      deudaTexto = `S/ ${clientDebt} total — ${cantFacturas} ${cantFacturas === 1 ? 'factura pendiente' : 'facturas pendientes'} × S/ ${montoMensual}/mes${periodoStr}`;
+    } else if (cantFacturas) {
+      deudaTexto = `S/ ${clientDebt} — ${cantFacturas} ${cantFacturas === 1 ? 'factura pendiente' : 'facturas pendientes'}`;
+    } else {
+      deudaTexto = `S/ ${clientDebt}`;
+    }
+  }
 
   const clientContext = clientName
     ? `CLIENTE IDENTIFICADO:
 - Nombre: ${clientName}
 - Plan: ${clientPlan || 'no registrado'}
-- Deuda pendiente: ${clientDebt != null ? `S/ ${clientDebt}` : 'sin datos en este momento'}`
+- Deuda: ${deudaTexto}`
     : 'CLIENTE: no identificado en el sistema (puede ser número no registrado o nuevo)';
 
   const { getPaymentBlock } = require('../config/payment-info');
@@ -206,10 +264,14 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
    → Ejemplo: "¡Buenas tardes, [Nombre]! 😊 ¿En qué puedo ayudarte hoy?"
    → NO menciones deuda ni servicio a menos que el cliente lo pregunte.
 
-2. CONSULTA DE DEUDA (¿cuánto debo?, ¿tengo deuda?, ¿mi saldo?):
-   → Con deuda: "[Nombre], tienes un saldo pendiente de S/ [monto]. Puedes enviarnos tu comprobante de pago por aquí."
-   → Sin deuda: "[Nombre], tu servicio está al día y no tienes facturas pendientes. 😊"
-   → Sin datos de deuda: "En este momento no puedo consultar tu deuda. Te ayudo a contactarte con soporte humano."
+2. CONSULTA DE DEUDA (¿cuánto debo?, ¿tengo deuda?, ¿mi saldo?, ¿por qué es tanto?):
+   → USA EXACTAMENTE los datos del bloque "Deuda:" de arriba. NUNCA inventes montos.
+   → Si el bloque muestra desglose (N facturas × S/X/mes), EXPLÍCALO al cliente así:
+     "[Nombre], tienes [N] facturas pendientes de S/[X]/mes cada una. Total: S/[total].
+      Para ponerte al día, envíanos el comprobante de pago de Yape, Plin o transferencia."
+   → Si no hay deuda: "[Nombre], tu servicio está al día, no tienes facturas pendientes. 😊"
+   → Si el cliente pregunta POR QUÉ es tanto: explica que son [N] meses acumulados sin pago.
+   → Sin datos de deuda: "En este momento no puedo consultar tu deuda. Comunícate con soporte: *932258382*"
 
 3. SOPORTE TÉCNICO (internet lento, caído, sin señal, router, etc.):
    → Pregunta: ¿tienes internet ahora o está totalmente caído? ¿La luz LOS/PON del router está roja?
@@ -375,6 +437,7 @@ Responde SOLO JSON: {"intent":"categoria","confidence":0.0-1.0}`,
 
 module.exports = {
   analyzeVoucherWithAI,
+  transcribeAudio,
   generateConversationalResponse,
   detectIntent,
   getFallbackResponse,

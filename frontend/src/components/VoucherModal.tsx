@@ -168,11 +168,31 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
               </div>
 
               {payment.rejection_reason && (
-                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30">
-                  <p className="text-xs text-red-400 flex items-start gap-1.5">
+                <div className={clsx(
+                  'p-3 rounded-xl border',
+                  payment.status === 'duplicate'
+                    ? 'bg-purple-500/10 border-purple-500/30'
+                    : 'bg-red-500/10 border-red-500/30'
+                )}>
+                  <p className={clsx('text-xs flex items-start gap-1.5', payment.status === 'duplicate' ? 'text-purple-300' : 'text-red-400')}>
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    {payment.rejection_reason}
+                    <span>{payment.rejection_reason}</span>
                   </p>
+                  {/* Extraer el ID del pago original del rejection_reason para mostrarlo */}
+                  {payment.status === 'duplicate' && (() => {
+                    const match = payment.rejection_reason?.match(/ID original: ([a-f0-9-]{36})/i);
+                    if (!match) return null;
+                    return (
+                      <div className="mt-2 pt-2 border-t border-purple-500/20">
+                        <p className="text-[10px] text-purple-400 font-mono break-all">
+                          Pago original: {match[1]}
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">
+                          Busca este ID en la tabla de Pagos para ver el original.
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

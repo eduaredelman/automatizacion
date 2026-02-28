@@ -1,7 +1,7 @@
 'use client';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Search, RefreshCw, Bot, User, CheckCheck, Filter } from 'lucide-react';
+import { Search, RefreshCw, Bot, Archive } from 'lucide-react';
 import clsx from 'clsx';
 
 interface Conversation {
@@ -26,6 +26,7 @@ interface ChatListProps {
   activeId: string | null;
   onSelect: (id: string) => void;
   onRefresh: () => void;
+  onArchive?: (id: string) => void;
 }
 
 const STATUS_CONFIG = {
@@ -42,7 +43,7 @@ const INTENT_EMOJI: Record<string, string> = {
 
 export default function ChatList({
   conversations, loading, search, onSearch,
-  statusFilter, onStatusFilter, activeId, onSelect, onRefresh,
+  statusFilter, onStatusFilter, activeId, onSelect, onRefresh, onArchive,
 }: ChatListProps) {
   return (
     <div className="flex flex-col h-full bg-[#0d1424]">
@@ -110,16 +111,29 @@ export default function ChatList({
               : '';
 
             return (
-              <button
+              <div
                 key={conv.id}
-                onClick={() => onSelect(conv.id)}
                 className={clsx(
-                  'w-full text-left p-4 border-b border-slate-800/40 transition-all duration-150',
+                  'relative group border-b border-slate-800/40 transition-all duration-150',
                   isActive
                     ? 'bg-blue-600/15 border-l-2 border-l-blue-500'
                     : 'hover:bg-slate-800/40'
                 )}
               >
+                {/* Botón archivar (visible en hover) */}
+                {onArchive && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onArchive(conv.id); }}
+                    className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 z-10 p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all"
+                    title="Archivar conversación"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  onClick={() => onSelect(conv.id)}
+                  className="w-full text-left p-4"
+                >
                 <div className="flex items-start gap-3">
                   {/* Avatar */}
                   <div className="relative shrink-0">
@@ -169,7 +183,8 @@ export default function ChatList({
                     </span>
                   )}
                 </div>
-              </button>
+                </button>
+              </div>
             );
           })
         )}

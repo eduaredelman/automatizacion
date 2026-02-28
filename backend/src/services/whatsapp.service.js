@@ -107,7 +107,7 @@ const parseWebhookPayload = (body) => {
       type: msg.type,
       text: msg.text?.body || null,
       mediaId: msg.image?.id || msg.document?.id || msg.audio?.id || msg.video?.id || null,
-      mediaMime: msg.image?.mime_type || msg.document?.mime_type || null,
+      mediaMime: msg.image?.mime_type || msg.document?.mime_type || msg.audio?.mime_type || msg.video?.mime_type || null,
       mediaCaption: msg.image?.caption || msg.document?.caption || null,
       location: msg.location || null,
       context: msg.context || null,

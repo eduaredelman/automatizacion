@@ -9,9 +9,9 @@ import { joinConversation, leaveConversation, getSocket } from '@/lib/socket';
 import VoucherModal from './VoucherModal';
 import {
   ArrowLeft, Bot, User, Send, UserCheck, Wifi,
-  CreditCard, Phone, MoreVertical, CheckCheck, Clock,
+  CreditCard, Phone, CheckCheck, Clock,
   AlertTriangle, CheckCircle, XCircle, Loader2, Image as ImageIcon,
-  Pencil, Check, X
+  Pencil, Check, X, Zap, Mic
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -81,6 +81,9 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
   const [showPaymentsPanel, setShowPaymentsPanel] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState(conversation.display_name || conversation.phone);
+  const [showQuickReplies, setShowQuickReplies] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<{ id: string; title: string; body: string }[]>([]);
+  const [qrSearch, setQrSearch] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const convMessages = messages[conversation.id] || [];
@@ -97,6 +100,11 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
       setLoading(false);
     }
   }, [conversation.id, setMessages, markRead]);
+
+  // Cargar respuestas rápidas al montar
+  useEffect(() => {
+    api.getQuickReplies().then(r => setQuickReplies(r.data.data || [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -323,23 +331,68 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
                 <span>El bot está respondiendo automáticamente. Toma el control para responder.</span>
               </div>
             )}
-            <form onSubmit={handleSend} className="flex gap-2">
-              <input
-                type="text"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                disabled={!isHuman}
-                placeholder={isHuman ? 'Escribe un mensaje...' : 'Toma control para responder'}
-                className="input-field py-2.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
-              />
-              <button
-                type="submit"
-                disabled={!isHuman || !text.trim() || sending}
-                className="btn-primary px-4 py-2.5 shrink-0"
-              >
-                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              </button>
-            </form>
+            <div className="relative">
+              {/* Panel respuestas rápidas */}
+              {showQuickReplies && isHuman && (
+                <div className="absolute bottom-full mb-2 left-0 right-0 bg-[#0d1424] border border-slate-700 rounded-xl shadow-xl z-10 max-h-64 overflow-y-auto">
+                  <div className="p-2 border-b border-slate-800 sticky top-0 bg-[#0d1424]">
+                    <input
+                      value={qrSearch}
+                      onChange={e => setQrSearch(e.target.value)}
+                      placeholder="Buscar respuesta rápida..."
+                      className="input-field text-xs py-1.5"
+                      autoFocus
+                    />
+                  </div>
+                  {quickReplies
+                    .filter(qr => !qrSearch || qr.title.toLowerCase().includes(qrSearch.toLowerCase()) || qr.body.toLowerCase().includes(qrSearch.toLowerCase()))
+                    .map(qr => (
+                      <button
+                        key={qr.id}
+                        type="button"
+                        onClick={() => { setText(qr.body); setShowQuickReplies(false); setQrSearch(''); }}
+                        className="w-full text-left px-3 py-2.5 hover:bg-slate-800/60 border-b border-slate-800/40 last:border-0"
+                      >
+                        <p className="text-xs font-medium text-white">{qr.title}</p>
+                        <p className="text-xs text-slate-500 truncate">{qr.body}</p>
+                      </button>
+                    ))
+                  }
+                  {quickReplies.filter(qr => !qrSearch || qr.title.toLowerCase().includes(qrSearch.toLowerCase()) || qr.body.toLowerCase().includes(qrSearch.toLowerCase())).length === 0 && (
+                    <p className="text-xs text-slate-600 text-center py-4">Sin resultados</p>
+                  )}
+                </div>
+              )}
+
+              <form onSubmit={handleSend} className="flex gap-2">
+                {isHuman && (
+                  <button
+                    type="button"
+                    onClick={() => { setShowQuickReplies(!showQuickReplies); setQrSearch(''); }}
+                    className={clsx('btn-ghost px-3 py-2.5 shrink-0', showQuickReplies ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-500 hover:text-yellow-400')}
+                    title="Respuestas rápidas"
+                  >
+                    <Zap className="w-4 h-4" />
+                  </button>
+                )}
+                <input
+                  type="text"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  disabled={!isHuman}
+                  placeholder={isHuman ? 'Escribe un mensaje...' : 'Toma control para responder'}
+                  className="input-field py-2.5 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  onFocus={() => setShowQuickReplies(false)}
+                />
+                <button
+                  type="submit"
+                  disabled={!isHuman || !text.trim() || sending}
+                  className="btn-primary px-4 py-2.5 shrink-0"
+                >
+                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </button>
+              </form>
+            </div>
           </div>
         </div>
 
@@ -427,6 +480,24 @@ function MessageBubble({ msg, onVoucherClick }: { msg: Message; onVoucherClick: 
         <p className={clsx('text-[10px] mb-1', isInbound ? 'text-slate-500' : isBot ? 'text-blue-400' : 'text-green-400')}>
           {isInbound ? 'Cliente' : isBot ? '🤖 Bot' : `👨‍💼 ${msg.agent_name || 'Asesor'}`}
         </p>
+
+        {/* Audio message */}
+        {(msg.message_type === 'audio' || msg.message_type === 'voice') && msg.media_url && (
+          <div className="rounded-2xl bg-slate-800/60 px-3 py-2.5 max-w-[280px] border border-slate-700/40">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Mic className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span className="text-[10px] text-slate-500">Nota de voz</span>
+            </div>
+            <audio controls className="w-full" style={{ height: '36px' }}>
+              <source src={`${API_URL}${msg.media_url}`} type={msg.media_mime || 'audio/ogg'} />
+            </audio>
+            {msg.body && (
+              <p className="text-xs text-slate-400 mt-1.5 italic border-t border-slate-700/40 pt-1.5">
+                📝 {msg.body}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Media message */}
         {msg.message_type === 'image' && msg.media_url && (

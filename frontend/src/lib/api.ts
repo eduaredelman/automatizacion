@@ -59,6 +59,14 @@ export const api = {
     getApi().get(`/chats/${id}/payments`),
   updateChatName: (id: string, name: string) =>
     getApi().patch(`/chats/${id}/name`, { name }),
+  archiveChat: (id: string) =>
+    getApi().delete(`/chats/${id}`),
+  getQuickReplies: () =>
+    getApi().get('/chats/quick-replies'),
+  createQuickReply: (title: string, body: string, tags?: string[]) =>
+    getApi().post('/chats/quick-replies', { title, body, tags }),
+  deleteQuickReply: (id: string) =>
+    getApi().delete(`/chats/quick-replies/${id}`),
 
   // Payments
   getPayments: (params?: Record<string, unknown>) =>

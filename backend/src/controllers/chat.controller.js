@@ -271,4 +271,56 @@ const updateName = async (req, res) => {
   }
 };
 
-module.exports = { listChats, getChat, sendMessage, takeover, release, getPayments, resolve, updateName };
+// DELETE /api/chats/:id - Archive conversation (hide from list)
+const archiveChat = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await query(`UPDATE conversations SET is_archived = true WHERE id = $1`, [id]);
+    emitToAgents('conversation_archived', { conversationId: id });
+    return success(res, {}, 'Conversación archivada');
+  } catch (err) {
+    logger.error('archiveChat error', { error: err.message });
+    return error(res, 'Error al archivar conversación');
+  }
+};
+
+// GET /api/chats/quick-replies - List quick reply templates
+const getQuickReplies = async (req, res) => {
+  try {
+    const result = await query(`SELECT * FROM quick_replies ORDER BY title ASC`);
+    return success(res, result.rows);
+  } catch (err) {
+    logger.error('getQuickReplies error', { error: err.message });
+    return error(res, 'Error al obtener respuestas rápidas');
+  }
+};
+
+// POST /api/chats/quick-replies - Create quick reply template
+const createQuickReply = async (req, res) => {
+  try {
+    const { title, body, tags } = req.body;
+    if (!title?.trim() || !body?.trim()) return error(res, 'Título y cuerpo requeridos', 400);
+    const result = await query(
+      `INSERT INTO quick_replies (id, title, body, tags, created_by, is_global)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, true) RETURNING *`,
+      [title.trim(), body.trim(), tags || [], req.agent.id]
+    );
+    return success(res, result.rows[0], 'Respuesta rápida creada');
+  } catch (err) {
+    logger.error('createQuickReply error', { error: err.message });
+    return error(res, 'Error al crear respuesta rápida');
+  }
+};
+
+// DELETE /api/chats/quick-replies/:id - Delete quick reply template
+const deleteQuickReply = async (req, res) => {
+  try {
+    await query(`DELETE FROM quick_replies WHERE id = $1`, [req.params.id]);
+    return success(res, {}, 'Respuesta rápida eliminada');
+  } catch (err) {
+    logger.error('deleteQuickReply error', { error: err.message });
+    return error(res, 'Error al eliminar respuesta rápida');
+  }
+};
+
+module.exports = { listChats, getChat, sendMessage, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply };

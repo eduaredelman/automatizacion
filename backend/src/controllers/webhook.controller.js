@@ -34,7 +34,9 @@ const receive = async (req, res) => {
     const parsed = whatsapp.parseWebhookPayload(req.body);
     if (!parsed) return;
 
-    const { phone, displayName, messageId, type, text, mediaId, mediaMime, mediaCaption } = parsed;
+    const { phone, displayName, messageId, type: rawType, text, mediaId, mediaMime, mediaCaption } = parsed;
+    // Normalizar 'voice' → 'audio' para coincidir con el CHECK constraint de la BD
+    const type = rawType === 'voice' ? 'audio' : rawType;
     logger.info('📱 Mensaje entrante', { phone, type, messageId });
 
     await whatsapp.markAsRead(messageId).catch(() => {});
@@ -53,14 +55,16 @@ const receive = async (req, res) => {
     );
     const conversation = convResult.rows[0];
 
-    // Guardar mensaje entrante
+    // Guardar mensaje entrante (solo tipos válidos según el CHECK constraint)
+    const validTypes = ['text','image','audio','video','document','location','sticker','reaction','system'];
+    const msgType = validTypes.includes(type) ? type : 'text';
     const msgResult = await query(
       `INSERT INTO messages
          (conversation_id, whatsapp_id, direction, sender_type, message_type, body, media_mime)
        VALUES ($1, $2, 'inbound', 'client', $3, $4, $5)
        ON CONFLICT (whatsapp_id) DO NOTHING
        RETURNING *`,
-      [conversation.id, messageId, type, text || mediaCaption || null, mediaMime || null]
+      [conversation.id, messageId, msgType, text || mediaCaption || null, mediaMime || null]
     );
 
     const message = msgResult.rows[0];
@@ -76,11 +80,13 @@ const receive = async (req, res) => {
     // Enrutar por tipo
     if (type === 'image' && mediaId) {
       await handleImageMessage({ conversation, message, phone, mediaId });
+    } else if (type === 'audio' && mediaId) {
+      await handleAudioMessage({ conversation, message, phone, mediaId });
     } else if (type === 'text' && text) {
       await handleTextMessage({ conversation, message, phone, text });
     } else {
       await whatsapp.sendTextMessage(phone,
-        `📸 Puedes enviarme texto o la foto de tu comprobante de pago.\n\nMétodos aceptados:\n${getPaymentBlock()}`
+        `📸 Puedes enviarme texto, una foto de tu comprobante de pago o una nota de voz.\n\nMétodos aceptados:\n${getPaymentBlock()}`
       );
     }
 
@@ -88,6 +94,41 @@ const receive = async (req, res) => {
 
   } catch (err) {
     logger.error('❌ Error en webhook', { error: err.message, stack: err.stack });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// MANEJAR AUDIO (nota de voz → transcribir con Whisper → procesar como texto)
+// ─────────────────────────────────────────────────────────────
+
+const handleAudioMessage = async ({ conversation, message, phone, mediaId }) => {
+  try {
+    // 1. Descargar audio
+    const mediaInfo = await whatsapp.downloadMedia(mediaId);
+    await query(
+      `UPDATE messages SET media_url = $1, media_mime = $2, media_filename = $3, media_size = $4 WHERE id = $5`,
+      [mediaInfo.url, mediaInfo.mime || 'audio/ogg', mediaInfo.filename, mediaInfo.size, message.id]
+    );
+
+    // 2. Transcribir con OpenAI Whisper
+    const transcript = await ai.transcribeAudio(mediaInfo.path).catch(() => null);
+
+    // 3. Si hay transcripción → guardar en body y procesar como mensaje de texto
+    if (transcript && transcript.trim().length > 0) {
+      await query(`UPDATE messages SET body = $1 WHERE id = $2`, [transcript, message.id]);
+      logger.info('Audio transcrito, procesando como texto', { phone, transcript: transcript.substring(0, 80) });
+      await handleTextMessage({ conversation, message, phone, text: transcript });
+    } else {
+      // Sin transcripción → respuesta genérica pidiendo que escriba
+      const response = `🎤 Recibí tu nota de voz, pero no pude transcribirla. ¿Puedes escribir tu consulta? 😊\n\nSi quieres registrar un pago, envíame la *foto de tu comprobante*.`;
+      await whatsapp.sendTextMessage(phone, response);
+      await saveOutboundMessage(conversation.id, response, 'bot');
+    }
+  } catch (err) {
+    logger.error('❌ Error procesando audio', { phone, error: err.message });
+    const response = '😔 No pude procesar tu nota de voz. Por favor escribe tu mensaje o llama a soporte: *932258382*';
+    await whatsapp.sendTextMessage(phone, response).catch(() => {});
+    await saveOutboundMessage(conversation.id, response, 'bot').catch(() => {});
   }
 };
 
@@ -215,7 +256,37 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
     if (wispClient) {
       const clientId   = String(wispClient.id_servicio || wispClient.id);
       const clientName = wispClient.nombre || wispClient.name || providedName;
-      const clientPlan = wispClient.plan || wispClient.nombre_plan || null;
+
+      // Extraer nombre del plan — WispHub puede usar varios campos
+      const clientPlan = wispClient.plan || wispClient.nombre_plan || wispClient.plan_nombre ||
+                         wispClient.servicio || wispClient.tipo_plan || null;
+
+      // Extraer precio del plan directamente del objeto WispHub
+      // (campo puede variar: precio_plan, monto_plan, costo, valor, precio_mensual, etc.)
+      const planPrice  = parseFloat(
+        wispClient.precio_plan || wispClient.monto_plan || wispClient.costo_plan ||
+        wispClient.precio || wispClient.costo || wispClient.valor || wispClient.monto ||
+        wispClient.precio_mensual || 0
+      ) || null;
+
+      // Log completo del objeto WispHub para diagnosticar campos disponibles
+      logger.info('WispHub client object fields', {
+        phone, clientId,
+        campos: Object.keys(wispClient),
+        plan: clientPlan,
+        planPrice,
+        rawPlan: {
+          plan: wispClient.plan,
+          nombre_plan: wispClient.nombre_plan,
+          plan_nombre: wispClient.plan_nombre,
+          precio_plan: wispClient.precio_plan,
+          monto_plan: wispClient.monto_plan,
+          costo: wispClient.costo,
+          precio: wispClient.precio,
+          valor: wispClient.valor,
+          monto: wispClient.monto,
+        },
+      });
 
       // Upsert cliente en caché local
       const clientRes = await query(
@@ -232,19 +303,23 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
         `UPDATE conversations SET client_id = $1 WHERE id = $2`,
         [clientRes.rows[0].id, conversation.id]
       );
-      // Actualizar conversation en memoria para el resto del flujo
       conversation.client_id = clientRes.rows[0].id;
 
       clientInfo = { name: providedName, plan: clientPlan, wisphub_id: clientId };
 
-      // Obtener deuda real
+      // Obtener deuda real con desglose completo
+      // Si WispHub ya nos dio el precio del plan, usarlo como monto_mensual (más confiable que el de factura)
       try {
         const debtInfo = await wisphub.consultarDeuda(clientId);
-        clientInfo.debt_amount = debtInfo.monto_deuda;
-        clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+        clientInfo.debt_amount       = debtInfo.monto_deuda;
+        clientInfo.tiene_deuda       = debtInfo.tiene_deuda;
+        clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
+        // Prioridad: precio del plan del objeto cliente > monto de la primera factura
+        clientInfo.monto_mensual     = planPrice || debtInfo.monto_mensual;
+        clientInfo.periodos          = debtInfo.periodos;
       } catch {}
 
-      logger.info('Cliente vinculado a WispHub', { phone, wispName: clientName, wisphub_id: clientId });
+      logger.info('Cliente vinculado a WispHub', { phone, wispName: clientName, wisphub_id: clientId, plan: clientPlan, planPrice });
     } else {
       logger.info('Nombre no encontrado en WispHub, continuando sin vincular', { phone, providedName });
     }
@@ -277,10 +352,15 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
     }
 
     // ── MODO CHAT ──────────────────────────────────────────────────
-    const debtMsg = clientInfo.tiene_deuda && clientInfo.debt_amount > 0
-      ? ` Tienes un saldo pendiente de *S/ ${clientInfo.debt_amount}*.`
-      : '';
-    const welcome = `¡Hola, *${providedName}*! 😊${debtMsg} ¿En qué puedo ayudarte hoy?`;
+    let debtMsg = '';
+    if (clientInfo.tiene_deuda && clientInfo.debt_amount > 0) {
+      if (clientInfo.cantidad_facturas && clientInfo.monto_mensual) {
+        debtMsg = `\n\n⚠️ Tienes *${clientInfo.cantidad_facturas} ${clientInfo.cantidad_facturas === 1 ? 'factura pendiente' : 'facturas pendientes'}* de *S/ ${clientInfo.monto_mensual}*/mes. Total a pagar: *S/ ${clientInfo.debt_amount}*.`;
+      } else {
+        debtMsg = `\n\n⚠️ Tienes un saldo pendiente de *S/ ${clientInfo.debt_amount}*.`;
+      }
+    }
+    const welcome = `¡Hola, *${providedName}*! 😊${debtMsg}\n\n¿En qué puedo ayudarte hoy?`;
     await whatsapp.sendTextMessage(phone, welcome);
     await saveOutboundMessage(conversation.id, welcome, 'bot');
 
@@ -382,8 +462,11 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           if (cc.wisphub_id) {
             try {
               const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id);
-              clientInfo.debt_amount = debtInfo.monto_deuda;
-              clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+              clientInfo.debt_amount     = debtInfo.monto_deuda;
+              clientInfo.tiene_deuda     = debtInfo.tiene_deuda;
+              clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
+              clientInfo.monto_mensual   = debtInfo.monto_mensual;
+              clientInfo.periodos        = debtInfo.periodos;
             } catch {}
           }
         }
@@ -448,8 +531,11 @@ const buildPaymentResponse = (result) => {
     case 'success':
       return `✅ *Pago registrado exitosamente*\n\n💰 Monto: S/ ${aiData.amount}\n📅 Fecha: ${aiData.paymentDate || 'hoy'}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nTu servicio ha sido actualizado. ¡Gracias por pagar con Fiber Perú! 🎉`;
 
+    case 'registered_no_debt':
+      return `✅ *Pago registrado en el sistema*\n\n💰 Monto: S/ ${aiData.amount}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nNo encontramos facturas pendientes en tu cuenta en este momento. Para más información comunícate con soporte: *932258382* 😊`;
+
     case 'duplicate':
-      return `⚠️ *Comprobante ya registrado*\n\nEste comprobante ya fue procesado anteriormente.\n\nSi crees que es un error, comunícate con soporte: *932258382*`;
+      return `⚠️ *Comprobante ya registrado*\n\nEste comprobante (código: ${aiData.operationCode || 'N/A'}) ya fue procesado anteriormente.\n\nSi crees que es un error, comunícate con soporte: *932258382*`;
 
     case 'unreadable':
       return `📸 La imagen no está clara. Por favor toma la foto con buena iluminación y que se vea el monto y el número de operación.\n\nIntenta de nuevo. 🔄`;
@@ -459,9 +545,6 @@ const buildPaymentResponse = (result) => {
 
     case 'amount_mismatch':
       return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide con tu deuda pendiente (*S/ ${debt.monto_deuda || 'N/A'}*).\n\nUn asesor revisará tu caso: *932258382*`;
-
-    case 'no_debt':
-      return `✅ Tu cuenta está al día, no tienes deuda pendiente en este momento.\n\n¿Tienes otra consulta? *932258382* 😊`;
 
     case 'manual_review':
       return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅\n\n¿Consultas? *932258382*`;
