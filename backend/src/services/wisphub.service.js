@@ -221,6 +221,10 @@ const obtenerClientesConDeuda = async () => {
 const consultarDeuda = async (clienteId, opts = {}) => {
   const { usuario: clienteUsuario = null, nombre: clienteNombre = null } = opts;
 
+  // Normalizar texto: quitar acentos, minúsculas, trim
+  const normalize = s => (s || '').toLowerCase().normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').trim();
+
   // Todas las variantes posibles de estado pendiente en WispHub
   const estadosPendientes = new Set([
     'pendiente', 'no pagada', 'no pagado', 'vencida', 'vencido',
@@ -264,46 +268,6 @@ const consultarDeuda = async (clienteId, opts = {}) => {
       return true;
     });
 
-    // ─── VALIDAR que las facturas pertenecen al cliente correcto ─────────────
-    // WispHub a veces ignora el filtro y devuelve facturas de OTRO cliente.
-    // Validamos contra el usuario o nombre del cliente real.
-    if ((clienteUsuario || clienteNombre) && pendientes.length > 0) {
-      const normalize = s => (s || '').toLowerCase().normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '').trim();
-
-      const clienteUsuarioNorm = normalize(clienteUsuario);
-      const clienteNombreNorm  = normalize(clienteNombre);
-
-      const pendientesValidados = pendientes.filter(f => {
-        const facUsuario = f.cliente?.usuario || '';
-        const facNombre  = normalize(f.cliente?.nombre || '');
-        const facUsuarioNorm = normalize(facUsuario);
-
-        // Aceptar si usuario o nombre del cliente en la factura coincide
-        if (clienteUsuario && facUsuarioNorm && facUsuarioNorm === clienteUsuarioNorm) return true;
-        if (clienteNombre  && facNombre   && facNombre.includes(clienteNombreNorm.split(' ')[0])) return true;
-        return false;
-      });
-
-      if (pendientesValidados.length > 0) {
-        logger.info('WispHub facturas validadas por cliente', {
-          clienteId,
-          original: pendientes.length,
-          validadas: pendientesValidados.length,
-        });
-        pendientes = pendientesValidados;
-      } else {
-        // Si ninguna pasó la validación, es señal de que WispHub devolvió facturas de otro cliente
-        logger.warn('WispHub facturas descartadas: ninguna coincide con el cliente', {
-          clienteId, clienteUsuario, clienteNombre,
-          facturasRetornadas: pendientes.slice(0, 3).map(f => ({
-            id: f.id_factura, usuario: f.cliente?.usuario, nombre: f.cliente?.nombre,
-          })),
-        });
-        pendientes = []; // Sin facturas válidas para este cliente
-      }
-    }
-
     // Si no encontró nada con filtro de estado, traer todas y filtrar localmente
     if (pendientes.length === 0) {
       const { data } = await withRetry(() =>
@@ -320,6 +284,62 @@ const consultarDeuda = async (clienteId, opts = {}) => {
         const estado = (f.estado || f.status || '').toString();
         return estadosPendientes.has(estado) || estadosPendientes.has(estado.toLowerCase());
       });
+    }
+
+    // ─── VALIDAR que las facturas pertenecen al cliente correcto ─────────────
+    // CRÍTICO: se aplica SIEMPRE (después del fallback también).
+    // WispHub ignora el filtro id_servicio y devuelve facturas de otro cliente.
+    // La pantalla WispHub confirma: cada factura tiene cliente.id_servicio propio.
+    // Ej: factura 5112 → id_servicio=1940 (Eduardo Marin), factura 5088 → id_servicio=1969 (Eduardo Huarancca)
+    if (pendientes.length > 0 && (clienteUsuario || clienteNombre)) {
+      const pendientesValidados = pendientes.filter(f => {
+        // 1. id_servicio del cliente en la factura (campo más confiable y específico)
+        const facServiceId = String(f.cliente?.id_servicio || f.id_servicio || '');
+        if (facServiceId) {
+          const match = facServiceId === String(clienteId);
+          if (!match) return false; // id_servicio diferente → rechazar definitivamente
+          return true;
+        }
+
+        // 2. Coincidencia exacta de usuario WispHub (único por cliente)
+        if (clienteUsuario) {
+          const facUsuario = normalize(f.cliente?.usuario || '');
+          if (facUsuario && facUsuario === normalize(clienteUsuario)) return true;
+        }
+
+        // 3. Coincidencia de nombre (≥2 palabras para evitar falsos positivos entre
+        //    clientes que comparten nombre de pila, ej: dos "Eduardo" distintos)
+        if (clienteNombre) {
+          const facNombre = normalize(f.cliente?.nombre || '');
+          if (facNombre) {
+            const words = normalize(clienteNombre).split(/\s+/).filter(w => w.length > 2);
+            const matchCount = words.filter(w => facNombre.includes(w)).length;
+            if (matchCount >= 2) return true;
+          }
+        }
+
+        return false;
+      });
+
+      if (pendientesValidados.length > 0) {
+        logger.info('WispHub facturas validadas por cliente', {
+          clienteId,
+          original: pendientes.length,
+          validadas: pendientesValidados.length,
+        });
+        pendientes = pendientesValidados;
+      } else {
+        // Ninguna pasó la validación → WispHub devolvió facturas de otro cliente
+        logger.warn('WispHub facturas descartadas (pertenecen a otro cliente)', {
+          clienteId, clienteUsuario, clienteNombre,
+          facturasRetornadas: pendientes.slice(0, 3).map(f => ({
+            facturaId: f.id_factura || f.id,
+            clienteServiceId: f.cliente?.id_servicio,
+            clienteNombre: f.cliente?.nombre,
+          })),
+        });
+        pendientes = [];
+      }
     }
 
     const montoTotal = pendientes.reduce((s, f) =>

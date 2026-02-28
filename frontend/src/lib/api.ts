@@ -77,6 +77,8 @@ export const api = {
     getApi().patch(`/payments/${id}/validate`, { notes }),
   rejectPayment: (id: string, reason: string) =>
     getApi().patch(`/payments/${id}/reject`, { reason }),
+  deletePayment: (id: string) =>
+    getApi().delete(`/payments/${id}`),
 };
 
 export default api;

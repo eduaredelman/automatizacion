@@ -141,4 +141,31 @@ const rejectPayment = async (req, res) => {
   }
 };
 
-module.exports = { listPayments, getStats, getPayment, validatePayment, rejectPayment };
+// DELETE /api/payments/:id - Permanently delete a payment record
+const deletePayment = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar que el pago existe antes de eliminar
+    const check = await query('SELECT id, status FROM payments WHERE id = $1', [id]);
+    if (!check.rows.length) return error(res, 'Pago no encontrado', 404);
+
+    // Registrar en eventos antes de eliminar (auditoría)
+    await query(
+      `INSERT INTO events (conversation_id, payment_id, agent_id, event_type, description)
+       SELECT conversation_id, $1, $2, 'payment_deleted', 'Pago eliminado permanentemente por agente'
+       FROM payments WHERE id = $1`,
+      [id, req.agent.id]
+    ).catch(() => {}); // No bloquear si el evento falla
+
+    await query('DELETE FROM payments WHERE id = $1', [id]);
+
+    logger.info('Payment permanently deleted', { paymentId: id, agentId: req.agent.id });
+    return success(res, { id }, 'Pago eliminado permanentemente');
+  } catch (err) {
+    logger.error('deletePayment error', { error: err.message });
+    return error(res, 'Error al eliminar pago');
+  }
+};
+
+module.exports = { listPayments, getStats, getPayment, validatePayment, rejectPayment, deletePayment };
