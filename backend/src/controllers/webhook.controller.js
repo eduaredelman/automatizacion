@@ -496,6 +496,31 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       }
     }
 
+    // 4b. Si identidad ya confirmada, SIEMPRE usar datos del cliente confirmado (no el del teléfono)
+    // Esto evita que cuando el teléfono devuelve Sabino pero Eduardo fue confirmado,
+    // la IA responda con los datos de Sabino.
+    if (conversation.client_id) {
+      try {
+        const ccRes = await query(
+          'SELECT name, plan, wisphub_id FROM clients WHERE id = $1',
+          [conversation.client_id]
+        );
+        if (ccRes.rows.length) {
+          const cc = ccRes.rows[0];
+          clientInfo = { name: cc.name, plan: cc.plan, wisphub_id: cc.wisphub_id };
+          // Consultar deuda del cliente confirmado (no del que devolvió la búsqueda por teléfono)
+          try {
+            const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id);
+            clientInfo.debt_amount = debtInfo.monto_deuda;
+            clientInfo.tiene_deuda = debtInfo.tiene_deuda;
+          } catch { /* deuda opcional */ }
+          logger.info('Usando datos del cliente confirmado', { phone, name: cc.name, wisphub_id: cc.wisphub_id });
+        }
+      } catch (e) {
+        logger.warn('No se pudo obtener datos del cliente confirmado', { error: e.message });
+      }
+    }
+
     // 5. ¿Identidad confirmada? (conversation.client_id existe)
     const identityConfirmed = !!conversation.client_id;
 
