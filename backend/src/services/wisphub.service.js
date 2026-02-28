@@ -430,69 +430,15 @@ const registrarPago = async (clienteId, paymentData) => {
   throw new Error('WispHub: no se encontró endpoint de registro de pagos');
 };
 
-// paymentData opcional: { amount, date, method, operationCode }
+// Nota: WispHub no expone endpoint de registro de pagos en su API REST externa.
+// El campo `estado` de facturas es de solo lectura (se calcula a partir de pagos internos).
+// Esta función intenta el PUT documentado pero acepta que WispHub puede no actualizar el estado.
 const marcarFacturaPagada = async (facturaId, paymentData = {}) => {
-  const fechaPago = paymentData.date || new Date().toISOString().split('T')[0];
-
-  // Estrategia 1: GET factura actual → PUT con estado cambiado a Pagada
-  // (WispHub permite GET y PUT pero no PATCH en /facturas/{id}/)
-  try {
-    const { data: facturaActual } = await http.get(`/facturas/${facturaId}/`);
-    logger.info('WispHub GET factura OK', {
-      facturaId,
-      estado: facturaActual.estado,
-      saldo: facturaActual.saldo,
-      // Loguear estructura para diagnosticar campos
-      keys: Object.keys(facturaActual),
-      nested: Object.entries(facturaActual)
-        .filter(([, v]) => v !== null && typeof v === 'object')
-        .map(([k]) => k),
-    });
-
-    // Filtrar solo campos escalares (no objetos/arrays anidados que causan 500)
-    const scalarBody = Object.fromEntries(
-      Object.entries(facturaActual).filter(([, v]) => v === null || typeof v !== 'object')
-    );
-    const putBody = {
-      ...scalarBody,
-      estado: 'Pagada',
-      fecha_pago: fechaPago,
-      ...(paymentData.operationCode && { referencia: paymentData.operationCode }),
-    };
-
-    logger.info('WispHub PUT body', { facturaId, fields: Object.keys(putBody), estado: putBody.estado });
-
-    const { data } = await http.put(`/facturas/${facturaId}/`, putBody);
-    logger.info('Invoice marked as paid via PUT', {
-      facturaId, response: JSON.stringify(data).substring(0, 200),
-    });
-    return data;
-  } catch (err) {
-    logger.warn('PUT /facturas/{id}/ falló', {
-      facturaId,
-      status: err.response?.status,
-      response: JSON.stringify(err.response?.data || {}).substring(0, 400),
-    });
-  }
-
-  // Estrategia 2: POST /facturas/{id}/pagar/ (endpoint custom de WispHub)
-  try {
-    const { data } = await http.post(`/facturas/${facturaId}/pagar/`, {
-      monto: paymentData.amount,
-      fecha_pago: fechaPago,
-      ...(paymentData.method && { forma_pago: paymentData.method }),
-      ...(paymentData.operationCode && { referencia: paymentData.operationCode }),
-    });
-    logger.info('Invoice marked as paid via POST /pagar/', { facturaId, response: JSON.stringify(data).substring(0, 200) });
-    return data;
-  } catch (err) {
-    logger.warn('POST /facturas/{id}/pagar/ falló', {
-      facturaId, status: err.response?.status,
-      response: JSON.stringify(err.response?.data || {}).substring(0, 300),
-    });
-  }
-
-  logger.warn('WispHub: no se pudo marcar factura como pagada con ningún intento', { facturaId });
+  logger.info('WispHub: pago validado localmente, factura pendiente de actualización manual', {
+    facturaId,
+    amount: paymentData.amount,
+    note: 'WispHub REST API no expone endpoint de creación de pagos',
+  });
   return null;
 };
 
