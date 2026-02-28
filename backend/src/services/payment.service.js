@@ -37,7 +37,7 @@ const savePendingVoucher = async ({ conversationId, messageId, imagePath, aiVisi
 // PASO 2: Validar y registrar pago en WispHub
 // Se llama DESPUÉS de confirmar identidad del cliente
 // ─────────────────────────────────────────────────────────────
-const finalizePendingVoucher = async (paymentId, clientPhone) => {
+const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = null) => {
   const { rows: [pmtRow] } = await query('SELECT * FROM payments WHERE id = $1', [paymentId]);
   if (!pmtRow) throw new Error(`Payment ${paymentId} not found`);
 
@@ -76,13 +76,27 @@ const finalizePendingVoucher = async (paymentId, clientPhone) => {
     }
 
     // WispHub client lookup
-    const client = await wisphub.buscarCliente(clientPhone, aiVisionData.payerName);
-    if (!client) {
-      await updatePayment({ status: 'manual_review', rejection_reason: 'Cliente no encontrado en el sistema' });
-      return { status: 'client_not_found', paymentId };
+    // Prioridad: usar wisphubClientId ya confirmado (evita búsqueda por teléfono que puede devolver cliente incorrecto)
+    let client = null;
+    let clientId = null;
+
+    if (wisphubClientId) {
+      clientId = wisphubClientId;
+      client = { id_servicio: wisphubClientId, id: wisphubClientId };
+      logger.info('Using confirmed WispHub client ID for payment', { wisphubClientId });
+    } else {
+      client = await wisphub.buscarCliente(clientPhone, aiVisionData.payerName);
+      if (!client) {
+        await updatePayment({ status: 'manual_review', rejection_reason: 'Cliente no encontrado en el sistema' });
+        return { status: 'client_not_found', paymentId };
+      }
+      clientId = client.id_servicio || client.id;
     }
 
-    const clientId = client.id_servicio || client.id;
+    if (!clientId) {
+      await updatePayment({ status: 'manual_review', rejection_reason: 'ID de cliente inválido' });
+      return { status: 'client_not_found', paymentId };
+    }
 
     await query(
       `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)

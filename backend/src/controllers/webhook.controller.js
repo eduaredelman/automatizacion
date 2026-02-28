@@ -104,21 +104,49 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       [mediaInfo.url, mediaInfo.filename, mediaInfo.size, message.id]
     );
 
-    // 2. Analizar con IA Vision
+    // 2. Analizar con IA Vision (clasificar tipo + extraer datos de pago)
     let visionResult = null;
     if (process.env.OPENAI_API_KEY) {
       visionResult = await ai.analyzeVoucherWithAI(mediaInfo.path);
     }
 
-    // 3. Rechazar si claramente no es un comprobante (alta confianza)
-    if (visionResult && !visionResult.is_valid_voucher && visionResult.confidence === 'high') {
-      const response = `❓ La imagen que enviaste no parece ser un comprobante de pago.\n\nPor favor envía la captura de tu pago realizado por:\n${getPaymentBlock()}\n\n¿Tienes dudas? Responde este mensaje. 😊`;
+    // 3. Clasificar tipo de imagen
+    const imageType = visionResult?.image_type || 'comprobante_pago'; // sin IA → asumir pago
+    logger.info('Imagen clasificada', { phone, imageType, confidence: visionResult?.confidence });
+
+    // 3a. IMAGEN TÉCNICA (router, cables, luces) → soporte técnico con IA
+    if (imageType === 'imagen_tecnica') {
+      const historyResult = await query(
+        `SELECT sender_type, body FROM messages
+         WHERE conversation_id = $1 AND message_type = 'text' AND body IS NOT NULL
+         ORDER BY created_at DESC LIMIT 5`,
+        [conversation.id]
+      );
+      const history = historyResult.rows.reverse();
+      let clientInfo = null;
+      if (conversation.client_id) {
+        const ccRes = await query('SELECT name FROM clients WHERE id = $1', [conversation.client_id]);
+        if (ccRes.rows.length) clientInfo = { name: conversation.display_name || ccRes.rows[0].name };
+      }
+      const techDesc = visionResult?.tech_description || 'equipo de red';
+      const aiResponse = await ai.generateConversationalResponse(
+        `El cliente envió una foto de: ${techDesc}. Brinda soporte técnico según lo que se ve en la imagen.`,
+        history, clientInfo
+      );
+      await whatsapp.sendTextMessage(phone, aiResponse.text);
+      await saveOutboundMessage(conversation.id, aiResponse.text, 'bot');
+      return;
+    }
+
+    // 3b. IMAGEN NO RELACIONADA (meme, selfie, etc.) → respuesta genérica
+    if (imageType === 'otro' && visionResult?.confidence === 'high') {
+      const response = `Solo puedo ayudarte con tu servicio de internet, pagos o soporte técnico. 😊\n\n¿Tienes algún problema con tu conexión o quieres registrar un pago?`;
       await whatsapp.sendTextMessage(phone, response);
       await saveOutboundMessage(conversation.id, response, 'bot');
       return;
     }
 
-    // 4. Guardar registro de pago pendiente
+    // 3c. COMPROBANTE DE PAGO (o imagen sin clasificar) → guardar + SIEMPRE pedir nombre
     const paymentId = await payment.savePendingVoucher({
       conversationId: conversation.id,
       messageId: message.id,
@@ -126,20 +154,11 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       aiVisionData: visionResult,
     });
 
-    // 5. ¿Ya se identificó el cliente?
-    const hasIdentity = !!(conversation.client_id || conversation.bot_intent === 'identity_ok');
-
-    if (!hasIdentity) {
-      // Pedir nombre para poder procesar el pago
-      await query(`UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`, [conversation.id]);
-      const askMsg = `Hemos recibido tu comprobante. ✅\n\nPara registrarlo correctamente, ¿me indicas tu *nombre completo* como titular del servicio?`;
-      await whatsapp.sendTextMessage(phone, askMsg);
-      await saveOutboundMessage(conversation.id, askMsg, 'bot');
-      return;
-    }
-
-    // 6. Identidad ya confirmada → procesar pago
-    await processPendingPayment(conversation, phone, paymentId);
+    // SIEMPRE pedir nombre completo para registrar en WispHub
+    await query(`UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`, [conversation.id]);
+    const askMsg = `Gracias por enviar tu comprobante. 🙌\n\nPara registrar tu pago, indícame por favor el *nombre completo* del titular del servicio.`;
+    await whatsapp.sendTextMessage(phone, askMsg);
+    await saveOutboundMessage(conversation.id, askMsg, 'bot');
 
   } catch (err) {
     logger.error('❌ Error procesando imagen', { phone, error: err.message });
@@ -278,7 +297,17 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 // ─────────────────────────────────────────────────────────────
 
 const processPendingPayment = async (conversation, phone, paymentId) => {
-  const result = await payment.finalizePendingVoucher(paymentId, phone);
+  // Obtener el wisphub_id del cliente confirmado para evitar búsqueda por teléfono incorrecta
+  let wisphubClientId = null;
+  if (conversation.client_id) {
+    try {
+      const ccRes = await query('SELECT wisphub_id FROM clients WHERE id = $1', [conversation.client_id]);
+      wisphubClientId = ccRes.rows[0]?.wisphub_id || null;
+      if (wisphubClientId) logger.info('Usando wisphub_id confirmado para pago', { wisphubClientId });
+    } catch {}
+  }
+
+  const result = await payment.finalizePendingVoucher(paymentId, phone, wisphubClientId);
   const responseText = buildPaymentResponse(result);
   await whatsapp.sendTextMessage(phone, responseText);
   await saveOutboundMessage(conversation.id, responseText, 'bot');

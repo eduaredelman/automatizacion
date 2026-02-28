@@ -40,10 +40,16 @@ const analyzeVoucherWithAI = async (imagePath) => {
           content: [
             {
               type: 'text',
-              text: `Analiza este comprobante de pago peruano y extrae los datos en formato JSON.
+              text: `Analiza esta imagen y devuelve JSON con los siguientes campos.
 
-Extrae exactamente:
+PRIMERO clasifica el tipo de imagen:
+- "comprobante_pago": screenshot de Yape, Plin, transferencia bancaria, voucher de pago
+- "imagen_tecnica": foto de router, cables de fibra, luces del equipo, instalación de red
+- "otro": selfie, meme, documento no relacionado, captura de pantalla sin relación a pagos/red
+
 {
+  "tipo_imagen": "comprobante_pago|imagen_tecnica|otro",
+  "descripcion_tecnica": "descripción breve si es imagen_tecnica (ej: 'router con luz LOS roja'), sino null",
   "es_comprobante_valido": true/false,
   "medio_pago": "yape|plin|bcp|interbank|bbva|scotiabank|banBif|transferencia|desconocido",
   "monto": número o null,
@@ -64,7 +70,8 @@ IMPORTANTE:
 - El código de operación puede llamarse: N° operación, código, referencia, número de transacción
 - Fecha actual: ${new Date().toLocaleDateString('es-PE')}
 - Solo extrae datos que están VISIBLES en la imagen
-- Si la imagen no es un comprobante de pago, marca es_comprobante_valido: false`
+- Si es imagen_tecnica: describe brevemente lo que ves en descripcion_tecnica
+- Si la imagen no es comprobante de pago, marca es_comprobante_valido: false`
             },
             {
               type: 'image_url',
@@ -98,6 +105,8 @@ IMPORTANTE:
     return {
       success: true,
       extraction_method: 'ai_vision',
+      image_type: result.tipo_imagen || (result.es_comprobante_valido ? 'comprobante_pago' : 'otro'),
+      tech_description: result.descripcion_tecnica || null,
       confidence: result.confianza === 'alta' ? 'high' : result.confianza === 'media' ? 'medium' : 'low',
       is_valid_voucher: result.es_comprobante_valido,
       paymentMethod: result.medio_pago,
