@@ -468,6 +468,114 @@ const obtenerTelefonoCliente = (cliente) => {
   return clean;
 };
 
+// ─────────────────────────────────────────────────────────────
+// SINCRONIZAR CONTACTOS → DB local (UPSERT enriquecido)
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// Determinar estado de servicio desde objeto WispHub
+// WispHub puede devolver: campo 'estado', 'activo' (bool/int/string), o ninguno.
+// Por defecto asumimos 'activo' — solo marcamos 'cortado' si hay evidencia explícita.
+// ─────────────────────────────────────────────────────────────
+const _resolverEstadoServicio = (cliente) => {
+  // 1. Campo 'estado' o 'status' explícito (más confiable)
+  const estado = String(cliente.estado || cliente.status || '').toLowerCase().trim();
+  if (estado && estado !== 'activo' && estado !== 'active') {
+    const cortados = ['cortado', 'suspendido', 'inactivo', 'retirado', 'baja', 'desactivado', 'inactive', 'suspended', 'cancelled'];
+    if (cortados.some(s => estado.includes(s))) return 'cortado';
+  }
+  if (estado === 'activo' || estado === 'active') return 'activo';
+
+  // 2. Campo 'activo' explícitamente falso
+  const activo = cliente.activo;
+  if (activo === false || activo === 0 || activo === '0' || activo === 'false' ||
+      activo === 'No' || activo === 'no' || activo === 'N') {
+    return 'cortado';
+  }
+
+  // 3. Si activo es explícitamente true/1/"1"/"Si", es activo
+  if (activo === true || activo === 1 || activo === '1' || activo === 'true' ||
+      activo === 'Si' || activo === 'si' || activo === 'S') {
+    return 'activo';
+  }
+
+  // 4. Default: asumir activo (WispHub puede omitir el campo en la respuesta)
+  return 'activo';
+};
+
+const sincronizarContactos = async (db) => {
+  logger.info('[WISPHUB] Iniciando sincronización completa de contactos...');
+
+  const clientes = await obtenerTodosLosClientes({ soloActivos: false });
+
+  // Loguear estructura del primer cliente para diagnóstico
+  if (clientes.length > 0) {
+    const sample = clientes[0];
+    logger.info('[WISPHUB] Estructura de muestra (primer cliente):', {
+      keys: Object.keys(sample),
+      activo: sample.activo,
+      estado: sample.estado,
+      status: sample.status,
+      id_servicio: sample.id_servicio,
+    });
+  }
+
+  let created = 0;
+  let updated = 0;
+  let errors  = 0;
+
+  for (const cliente of clientes) {
+    try {
+      const wisphubId = String(cliente.id_servicio || cliente.id || '');
+      if (!wisphubId) { errors++; continue; }
+
+      const phone          = obtenerTelefonoCliente(cliente) || '';
+      const name           = cliente.nombre || cliente.nombre_completo || 'N/A';
+      const email          = cliente.correo  || cliente.email || null;
+      const serviceId      = wisphubId;
+      const plan           = cliente.plan || cliente.plan_nombre || null;
+      const address        = cliente.direccion || null;
+      const serviceStatus  = _resolverEstadoServicio(cliente);
+      const tags           = Array.isArray(cliente.etiquetas) ? cliente.etiquetas : [];
+      const planPrice      = parseFloat(cliente.precio_plan || cliente.precio || 0) || null;
+      const fechaRegistro  = cliente.fecha_registro || null;
+      const wisphubRaw     = JSON.stringify(cliente);
+
+      const result = await db.query(
+        `INSERT INTO clients
+           (wisphub_id, phone, name, email, service_id, plan, address,
+            service_status, tags, plan_price, fecha_registro, wisphub_raw, last_synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+         ON CONFLICT (wisphub_id) DO UPDATE SET
+           phone          = EXCLUDED.phone,
+           name           = EXCLUDED.name,
+           email          = EXCLUDED.email,
+           plan           = EXCLUDED.plan,
+           address        = EXCLUDED.address,
+           service_status = EXCLUDED.service_status,
+           tags           = EXCLUDED.tags,
+           plan_price     = EXCLUDED.plan_price,
+           wisphub_raw    = EXCLUDED.wisphub_raw,
+           last_synced_at = NOW(),
+           updated_at     = NOW()
+         RETURNING id, (xmax = 0) AS is_new`,
+        [wisphubId, phone, name, email, serviceId, plan, address,
+         serviceStatus, tags, planPrice, fechaRegistro, wisphubRaw]
+      );
+
+      if (result.rows[0]?.is_new) created++;
+      else updated++;
+
+    } catch (err) {
+      errors++;
+      logger.warn('[WISPHUB] Error UPSERT cliente', { error: err.message });
+    }
+  }
+
+  logger.info(`[WISPHUB] Sync completo: ${clientes.length} total, ${created} nuevos, ${updated} actualizados, ${errors} errores`);
+  return { total: clientes.length, created, updated, errors };
+};
+
 module.exports = {
   buscarCliente,
   buscarClientePorTelefono,
@@ -479,4 +587,5 @@ module.exports = {
   marcarFacturaPagada,
   cortarServicio,
   obtenerTelefonoCliente,
+  sincronizarContactos,
 };

@@ -7,17 +7,20 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
+const fs     = require('fs');
 const logger = require('./utils/logger');
-const { checkConnection } = require('./config/database');
+const { query, checkConnection } = require('./config/database');
 const { initSocket } = require('./config/socket');
 const { initScheduler } = require('./services/scheduler.service');
 
 // Routes
-const webhookRoutes = require('./routes/webhook.routes');
-const chatRoutes = require('./routes/chat.routes');
-const authRoutes = require('./routes/auth.routes');
-const paymentRoutes = require('./routes/payment.routes');
+const webhookRoutes  = require('./routes/webhook.routes');
+const chatRoutes     = require('./routes/chat.routes');
+const authRoutes     = require('./routes/auth.routes');
+const paymentRoutes  = require('./routes/payment.routes');
 const schedulerRoutes = require('./routes/scheduler.routes');
+const contactRoutes  = require('./routes/contacts.routes');
+const campaignRoutes = require('./routes/campaigns.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -92,6 +95,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/scheduler', schedulerRoutes);
+app.use('/api/contacts', contactRoutes);
+app.use('/api/campaigns', campaignRoutes);
 
 // ── Health Check ───────────────────────────────────────────
 app.get('/health', async (req, res) => {
@@ -128,6 +133,18 @@ server.listen(PORT, async () => {
   const dbOk = await checkConnection();
   if (dbOk) {
     logger.info('✅ PostgreSQL connected');
+    // Aplicar migraciones pendientes
+    try {
+      const migrationPath = path.join(__dirname, '../../database/migrations/001_contacts_campaigns.sql');
+      if (fs.existsSync(migrationPath)) {
+        const sql = fs.readFileSync(migrationPath, 'utf8');
+        await query(sql);
+        logger.info('✅ Migration 001_contacts_campaigns applied');
+      }
+    } catch (err) {
+      // Las migraciones idempotentes (IF NOT EXISTS / IF EXISTS) no fallan en re-ejecución
+      logger.warn('Migration warning (may already be applied):', err.message);
+    }
     // Iniciar scheduler DESPUÉS de confirmar que la DB está lista
     initScheduler();
   } else {

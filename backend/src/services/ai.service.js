@@ -198,12 +198,13 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
   const client = getOpenAI();
 
   // Información del cliente para contexto
-  const clientName  = clientInfo?.name || clientInfo?.nombre;
-  const clientPlan  = clientInfo?.plan;
-  const clientDebt  = clientInfo?.debt_amount ?? clientInfo?.deuda;
-  const cantFacturas   = clientInfo?.cantidad_facturas ?? null;
-  const montoMensual   = clientInfo?.monto_mensual ?? null;
-  const periodos       = clientInfo?.periodos ?? [];
+  const clientName          = clientInfo?.name || clientInfo?.nombre;
+  const clientPlan          = clientInfo?.plan;
+  const clientDebt          = clientInfo?.debt_amount ?? clientInfo?.deuda;
+  const cantFacturas        = clientInfo?.cantidad_facturas ?? null;
+  const montoMensual        = clientInfo?.monto_mensual ?? null;
+  const periodos            = clientInfo?.periodos ?? [];
+  const serviceStatus       = clientInfo?.service_status ?? 'activo'; // 'activo' | 'cortado'
 
   // Construir desglose de deuda legible
   let deudaTexto = 'sin datos en este momento';
@@ -220,10 +221,15 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
     }
   }
 
+  const serviceStatusLabel = serviceStatus === 'cortado'
+    ? '⛔ CORTADO / SUSPENDIDO (debe pagar para reactivar)'
+    : '✅ Activo';
+
   const clientContext = clientName
-    ? `CLIENTE IDENTIFICADO:
+    ? `CLIENTE IDENTIFICADO (datos de WispHub):
 - Nombre: ${clientName}
 - Plan: ${clientPlan || 'no registrado'}
+- Estado del servicio: ${serviceStatusLabel}
 - Deuda: ${deudaTexto}`
     : 'CLIENTE: no identificado en el sistema (puede ser número no registrado o nuevo)';
 
@@ -251,9 +257,11 @@ REGLAS ESTRICTAS:
 3. NUNCA menciones bases de datos, APIs, OpenAI, sistemas internos ni procesos técnicos.
 4. Habla como un asesor humano de Fiber Perú. Español claro, sencillo, respetuoso.
 5. Respuestas cortas y útiles. RESPONDE EXACTAMENTE A LO QUE EL CLIENTE DIJO.
-6. CRÍTICO: Si arriba aparece "CLIENTE IDENTIFICADO: Nombre: [X]", ese cliente SÍ está en el sistema.
+6. CRÍTICO: Si arriba aparece "CLIENTE IDENTIFICADO", ese cliente SÍ está registrado en WispHub.
    NUNCA digas "no estás registrado" ni "no encontré tu número" cuando ya tienes su nombre.
-   El nombre oficial del contrato es el que está en el sistema, aunque el cliente diga otro diferente.
+   El nombre oficial del contrato es el que está en WispHub, aunque el cliente diga otro diferente.
+7. SERVICIO CORTADO: Si el estado del servicio dice "CORTADO/SUSPENDIDO", infórmale amablemente
+   que su servicio está suspendido y que al pagar y enviar el comprobante, lo reactivamos en minutos.
 
 ═══════════════════════════════
 VARIEDAD Y MEMORIA:

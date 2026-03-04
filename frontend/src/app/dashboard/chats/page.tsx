@@ -27,12 +27,21 @@ export default function ChatsPage() {
         status: statusFilter || undefined,
       });
       setConversations(data.data);
+      // Auto-abrir conversación si viene desde pagos
+      const pending = useChatStore.getState().pendingOpenPhone;
+      if (pending) {
+        const conv = data.data.find((c: { phone: string; id: string }) =>
+          c.phone === pending || c.phone === `51${pending}` || `51${c.phone}` === pending
+        );
+        if (conv) setActiveConversation(conv.id);
+        useChatStore.getState().setPendingOpenPhone(null);
+      }
     } catch (err) {
       console.error('Failed to load chats:', err);
     } finally {
       setLoading(false);
     }
-  }, [search, statusFilter, setConversations]);
+  }, [search, statusFilter, setConversations, setActiveConversation]);
 
   useEffect(() => { loadChats(); }, [loadChats]);
 

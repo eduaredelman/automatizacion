@@ -5,7 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const {
   listChats, getChat, sendMessage, sendMedia, startNewChat,
   takeover, release, getPayments, resolve, updateName,
-  archiveChat, getQuickReplies, createQuickReply, deleteQuickReply
+  archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage
 } = require('../controllers/chat.controller');
 
 // Multer: memoria, 25 MB, tipos permitidos
@@ -38,6 +38,7 @@ router.post('/:id/takeover', takeover);
 router.post('/:id/release', release);
 router.post('/:id/resolve', resolve);
 router.patch('/:id/name', updateName);
+router.delete('/:id/messages/:msgId', deleteMessage);
 router.delete('/:id', archiveChat);
 router.get('/:id/payments', getPayments);
 

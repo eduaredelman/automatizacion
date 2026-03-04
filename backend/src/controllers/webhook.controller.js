@@ -64,7 +64,40 @@ const receive = async (req, res) => {
        RETURNING *`,
       [phone, displayName, text || `[${type}]`]
     );
-    const conversation = convResult.rows[0];
+    let conversation = convResult.rows[0];
+
+    // ── AUTO-LINK: Si el teléfono ya está en la tabla clients (sync WispHub previo),
+    // vincular la conversación INMEDIATAMENTE sin esperar que el cliente escriba su nombre.
+    if (!conversation.client_id) {
+      const phoneShort = phone.startsWith('51') ? phone.slice(2) : phone;
+      const clientLookup = await query(
+        `SELECT id, name, wisphub_id FROM clients
+         WHERE (phone = $1 OR phone = $2) AND phone != '' AND wisphub_id IS NOT NULL
+         LIMIT 1`,
+        [phone, phoneShort]
+      ).catch(() => ({ rows: [] }));
+
+      if (clientLookup.rows.length) {
+        const found = clientLookup.rows[0];
+        await query(
+          `UPDATE conversations SET
+             client_id    = $1,
+             display_name = $2,
+             bot_intent   = 'identity_ok'
+           WHERE id = $3 AND client_id IS NULL`,
+          [found.id, found.name, conversation.id]
+        );
+        conversation = { ...conversation, client_id: found.id, display_name: found.name, bot_intent: 'identity_ok' };
+        const { emitToAgents } = require('../config/socket');
+        emitToAgents('conversation_update', {
+          conversationId: conversation.id,
+          display_name: found.name,
+          client_id: found.id,
+          bot_intent: 'identity_ok',
+        });
+        logger.info('Auto-vinculado cliente WispHub por teléfono', { phone, name: found.name, wisphub_id: found.wisphub_id });
+      }
+    }
 
     // Guardar mensaje entrante (solo tipos válidos según el CHECK constraint)
     const validTypes = ['text','image','audio','video','document','location','sticker','reaction','system'];
@@ -198,7 +231,7 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       return;
     }
 
-    // 3c. COMPROBANTE DE PAGO (o imagen sin clasificar) → guardar + SIEMPRE pedir nombre
+    // 3c. COMPROBANTE DE PAGO (o imagen sin clasificar) → guardar voucher
     const paymentId = await payment.savePendingVoucher({
       conversationId: conversation.id,
       messageId: message.id,
@@ -206,11 +239,21 @@ const handleImageMessage = async ({ conversation, message, phone, mediaId }) => 
       aiVisionData: visionResult,
     });
 
-    // SIEMPRE pedir nombre completo para registrar en WispHub
-    await query(`UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`, [conversation.id]);
-    const askMsg = `Gracias por enviar tu comprobante. 🙌\n\nPara registrar tu pago, indícame por favor el *nombre completo* del titular del servicio.`;
-    await whatsapp.sendTextMessage(phone, askMsg);
-    await saveOutboundMessage(conversation.id, askMsg, 'bot');
+    if (conversation.client_id) {
+      // ✅ Cliente ya identificado via WispHub — procesar directamente sin pedir nombre
+      const nombre = conversation.display_name && conversation.display_name !== phone
+        ? conversation.display_name : 'Cliente';
+      const ackMsg = `Gracias por tu comprobante, *${nombre}*. 🙌 Procesando tu pago...`;
+      await whatsapp.sendTextMessage(phone, ackMsg);
+      await saveOutboundMessage(conversation.id, ackMsg, 'bot');
+      await processPendingPayment(conversation, phone, paymentId);
+    } else {
+      // ❓ Cliente desconocido — pedir nombre completo para vincular con WispHub
+      await query(`UPDATE conversations SET bot_intent = 'awaiting_payment_name' WHERE id = $1`, [conversation.id]);
+      const askMsg = `Gracias por enviar tu comprobante. 🙌\n\nPara registrar tu pago, indícame por favor el *nombre completo* del titular del servicio.`;
+      await whatsapp.sendTextMessage(phone, askMsg);
+      await saveOutboundMessage(conversation.id, askMsg, 'bot');
+    }
 
   } catch (err) {
     logger.error('❌ Error procesando imagen', { phone, error: err.message });
@@ -240,16 +283,15 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
     }
 
     const providedName = text.trim();
+    const { emitToAgents } = require('../config/socket');
 
     // Guardar nombre INMEDIATAMENTE como display_name (lo que el cliente escribió)
+    // Luego se actualizará al nombre oficial de WispHub si se encuentra
     await query(
       `UPDATE conversations SET display_name = $1, bot_intent = 'identity_ok' WHERE id = $2`,
       [providedName, conversation.id]
     );
-
-    // Notificar al dashboard en tiempo real
-    const { emitToAgents } = require('../config/socket');
-    emitToAgents('conversation_update', { conversationId: conversation.id, display_name: providedName });
+    emitToAgents('conversation_update', { conversationId: conversation.id, display_name: providedName, bot_intent: 'identity_ok' });
 
     logger.info('Nombre registrado', { phone, providedName, mode });
 
@@ -309,14 +351,24 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
         [clientId, phone, clientName, clientId, clientPlan]
       );
 
-      // Vincular conversación al cliente WispHub
+      // Vincular conversación al cliente WispHub y actualizar display_name al nombre oficial
       await query(
-        `UPDATE conversations SET client_id = $1 WHERE id = $2`,
-        [clientRes.rows[0].id, conversation.id]
+        `UPDATE conversations SET client_id = $1, display_name = $2 WHERE id = $3`,
+        [clientRes.rows[0].id, clientName, conversation.id]
       );
       conversation.client_id = clientRes.rows[0].id;
 
-      clientInfo = { name: providedName, plan: clientPlan, wisphub_id: clientId };
+      // Emitir nombre oficial WispHub al frontend (puede diferir de lo que el cliente escribió)
+      if (clientName !== providedName) {
+        emitToAgents('conversation_update', {
+          conversationId: conversation.id,
+          display_name: clientName,
+          client_id: clientRes.rows[0].id,
+          bot_intent: 'identity_ok',
+        });
+      }
+
+      clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId };
 
       // Obtener deuda real — pasar usuario y nombre para validar que las facturas
       // pertenecen al cliente correcto (WispHub puede devolver facturas de otro cliente)
@@ -483,7 +535,7 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     if (conversation.client_id) {
       try {
         const ccRes = await query(
-          'SELECT name, plan, wisphub_id FROM clients WHERE id = $1',
+          'SELECT name, plan, wisphub_id, service_status FROM clients WHERE id = $1',
           [conversation.client_id]
         );
         if (ccRes.rows.length) {
@@ -491,7 +543,7 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           // Preferir display_name real; si es username, usar nombre de BD con misma validación
           const ccNameIsReal = cc.name && cc.name.includes(' ');
           const bestName = isRealName ? rawDisplayName : (ccNameIsReal ? cc.name : 'Cliente');
-          clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id };
+          clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id, service_status: cc.service_status };
           if (cc.wisphub_id) {
             try {
               // Pasar nombre del cliente para validar facturas (evita recibir facturas de otro cliente)

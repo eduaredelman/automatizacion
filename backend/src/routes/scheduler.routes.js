@@ -65,9 +65,9 @@ router.get('/status', (req, res) => {
       },
       {
         name: 'Sincronización WispHub',
-        schedule: 'Diario a las 7:00 AM',
+        schedule: `Cada ${process.env.SYNC_INTERVAL_MINUTES || 5} minutos`,
         active_today: true,
-        description: 'Actualiza la base de datos local con los clientes de WispHub',
+        description: 'Actualiza la base de datos local con todos los contactos de WispHub (activos e inactivos)',
       },
     ],
   });

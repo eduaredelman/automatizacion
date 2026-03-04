@@ -70,11 +70,11 @@ export default function SchedulerPage() {
       key: 'sync',
       endpoint: '/scheduler/run/sync',
       icon: RefreshCw,
-      label: 'Sincronizar Clientes',
+      label: 'Sincronizar Contactos',
       color: 'text-green-400',
       bg: 'bg-green-500/10 border-green-500/20',
       btnClass: 'bg-green-600/20 hover:bg-green-600/40 text-green-400 border-green-500/30',
-      description: 'Actualiza la base de datos local con todos los clientes de WispHub. Se ejecuta diariamente a las 7:00 AM.',
+      description: 'Actualiza la base de datos local con todos los contactos de WispHub (activos e inactivos). Se ejecuta automáticamente cada 5 minutos.',
       warning: null,
     },
   ];

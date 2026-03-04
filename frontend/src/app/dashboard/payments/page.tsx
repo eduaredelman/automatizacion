@@ -1,17 +1,20 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
+import { useChatStore } from '@/store/chat.store';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import VoucherModal from '@/components/VoucherModal';
 import {
   CreditCard, RefreshCw, Trash2, CheckCircle2,
-  Clock, AlertTriangle, DollarSign, TrendingUp,
+  Clock, AlertTriangle, DollarSign, MessageSquare,
 } from 'lucide-react';
 import clsx from 'clsx';
 
 interface Payment {
   id: string;
+  conversation_id: string | null;
   phone: string;
   display_name: string;
   status: string;
@@ -62,6 +65,8 @@ const METHOD_ICONS: Record<string, string> = {
 };
 
 export default function PaymentsPage() {
+  const router = useRouter();
+  const { setPendingOpenPhone } = useChatStore();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -95,6 +100,12 @@ export default function PaymentsPage() {
   const getStatCount = (status: string) => {
     const found = stats?.by_status?.find(s => s.status === status);
     return parseInt(found?.count || '0');
+  };
+
+  const handleViewChat = (phone: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPendingOpenPhone(phone);
+    router.push('/dashboard/chats');
   };
 
   const handleDelete = async (p: Payment, e: React.MouseEvent) => {
@@ -273,17 +284,26 @@ export default function PaymentsPage() {
                         {format(new Date(p.created_at), 'dd MMM HH:mm', { locale: es })}
                       </td>
                       <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
-                        <button
-                          onClick={(e) => handleDelete(p, e)}
-                          disabled={deletingId === p.id}
-                          title="Eliminar permanentemente"
-                          className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                        >
-                          {deletingId === p.id
-                            ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            : <Trash2 className="w-3.5 h-3.5" />
-                          }
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => handleViewChat(p.phone, e)}
+                            title="Ver conversación en chat"
+                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDelete(p, e)}
+                            disabled={deletingId === p.id}
+                            title="Eliminar permanentemente"
+                            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                          >
+                            {deletingId === p.id
+                              ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              : <Trash2 className="w-3.5 h-3.5" />
+                            }
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

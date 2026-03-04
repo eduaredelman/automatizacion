@@ -43,13 +43,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       }
     };
 
-    const handleConversationUpdate = ({ conversationId, status, agent }: {
+    const handleConversationUpdate = (data: {
       conversationId: string;
-      status: 'bot' | 'human' | 'resolved' | 'spam';
+      status?: 'bot' | 'human' | 'resolved' | 'spam';
       agent?: { name: string } | null;
+      display_name?: string;
+      client_id?: string;
+      bot_intent?: string;
     }) => {
-      updateConversation(conversationId, { status, agent_name: agent?.name });
-      // Sonido de alerta cuando un cliente pide asesor humano
+      const { conversationId, status, agent, display_name, bot_intent } = data;
+      updateConversation(conversationId, {
+        ...(status       !== undefined && { status }),
+        ...(agent        !== undefined && { agent_name: agent?.name }),
+        ...(display_name !== undefined && { display_name }),
+        ...(bot_intent   !== undefined && { bot_intent }),
+      });
       if (status === 'human') {
         playSound('takeover');
       }

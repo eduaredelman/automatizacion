@@ -457,4 +457,27 @@ const startNewChat = async (req, res) => {
   }
 };
 
-module.exports = { listChats, getChat, sendMessage, sendMedia, startNewChat, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply };
+// DELETE /api/chats/:id/messages/:msgId - Delete a bot/agent message from the CRM
+const deleteMessage = async (req, res) => {
+  try {
+    const { id, msgId } = req.params;
+    const check = await query(
+      'SELECT * FROM messages WHERE id = $1 AND conversation_id = $2',
+      [msgId, id]
+    );
+    if (!check.rows.length) return error(res, 'Mensaje no encontrado', 404);
+    if (check.rows[0].sender_type === 'client') return error(res, 'No se puede eliminar mensajes del cliente', 403);
+
+    await query('DELETE FROM messages WHERE id = $1', [msgId]);
+
+    emitToConversation(id, 'message_deleted', { messageId: msgId, conversationId: id });
+    emitToAgents('message_deleted', { messageId: msgId, conversationId: id });
+
+    return success(res, { messageId: msgId }, 'Mensaje eliminado');
+  } catch (err) {
+    logger.error('deleteMessage error', { error: err.message });
+    return error(res, 'Error al eliminar mensaje');
+  }
+};
+
+module.exports = { listChats, getChat, sendMessage, sendMedia, startNewChat, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage };

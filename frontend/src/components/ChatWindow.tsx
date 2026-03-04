@@ -11,7 +11,7 @@ import {
   ArrowLeft, Bot, User, Send, UserCheck, Wifi,
   CreditCard, Phone, CheckCheck, Clock,
   AlertTriangle, CheckCircle, XCircle, Loader2, Image as ImageIcon,
-  Pencil, Check, X, Zap, Mic, Paperclip, FileText, ShieldCheck
+  Pencil, Check, X, Zap, Mic, Paperclip, FileText, ShieldCheck, Trash2, Plus
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -71,7 +71,7 @@ const PAYMENT_STATUS: Record<string, { icon: React.ElementType; color: string; l
 };
 
 export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindowProps) {
-  const { messages, setMessages, addMessage, markRead } = useChatStore();
+  const { messages, setMessages, addMessage, markRead, removeMessage } = useChatStore();
   const { agent } = useAuthStore();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,6 +85,11 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
   const [showQuickReplies, setShowQuickReplies] = useState(false);
   const [quickReplies, setQuickReplies] = useState<{ id: string; title: string; body: string }[]>([]);
   const [qrSearch, setQrSearch] = useState('');
+  const [showAddQR, setShowAddQR] = useState(false);
+  const [newQRTitle, setNewQRTitle] = useState('');
+  const [newQRBody, setNewQRBody] = useState('');
+  const [savingQR, setSavingQR] = useState(false);
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -120,6 +125,12 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
         addMessage(msg);
       };
 
+      const handleMessageDeleted = ({ messageId, conversationId }: { messageId: string; conversationId: string }) => {
+        if (conversationId === conversation.id) {
+          removeMessage(conversationId, messageId);
+        }
+      };
+
       // Al reconectar el socket, volver a unirse a la sala y recargar mensajes
       const handleReconnect = () => {
         joinConversation(conversation.id);
@@ -127,11 +138,13 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
       };
 
       socket.on('message', handleMessage);
+      socket.on('message_deleted', handleMessageDeleted);
       socket.on('connect', handleReconnect);
 
       return () => {
         leaveConversation(conversation.id);
         socket.off('message', handleMessage);
+        socket.off('message_deleted', handleMessageDeleted);
         socket.off('connect', handleReconnect);
       };
     }
@@ -239,6 +252,45 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
     setNewName(conversation.display_name || conversation.phone);
     setEditingName(true);
     setTimeout(() => nameInputRef.current?.select(), 50);
+  };
+
+  const handleDeleteMessage = async (msgId: string) => {
+    if (!confirm('¿Eliminar este mensaje del CRM?')) return;
+    setDeletingMsgId(msgId);
+    try {
+      await api.deleteMessage(conversation.id, msgId);
+      removeMessage(conversation.id, msgId);
+    } catch (err) {
+      console.error('Delete message failed:', err);
+    } finally {
+      setDeletingMsgId(null);
+    }
+  };
+
+  const handleSaveQR = async () => {
+    if (!newQRTitle.trim() || !newQRBody.trim()) return;
+    setSavingQR(true);
+    try {
+      const { data } = await api.createQuickReply(newQRTitle.trim(), newQRBody.trim());
+      setQuickReplies(prev => [...prev, data.data]);
+      setNewQRTitle('');
+      setNewQRBody('');
+      setShowAddQR(false);
+    } catch (err) {
+      console.error('Create QR failed:', err);
+    } finally {
+      setSavingQR(false);
+    }
+  };
+
+  const handleDeleteQR = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await api.deleteQuickReply(id);
+      setQuickReplies(prev => prev.filter(qr => qr.id !== id));
+    } catch (err) {
+      console.error('Delete QR failed:', err);
+    }
   };
 
   const isHuman = conversation.status === 'human';
@@ -362,10 +414,14 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
             ) : convMessages.length === 0 ? (
               <p className="text-center text-slate-600 text-sm py-8">Sin mensajes</p>
             ) : (
-              convMessages.map((msg) => <MessageBubble key={msg.id} msg={msg} onVoucherClick={() => {
-                const p = payments.find(p => p.message_id === msg.id);
-                if (p) setSelectedVoucher(p);
-              }} />)
+              convMessages.map((msg) => <MessageBubble key={msg.id} msg={msg}
+                onVoucherClick={() => {
+                  const p = payments.find(p => p.message_id === msg.id);
+                  if (p) setSelectedVoucher(p);
+                }}
+                onDelete={handleDeleteMessage}
+                deletingId={deletingMsgId}
+              />)
             )}
             <div ref={bottomRef} />
           </div>
@@ -381,31 +437,93 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
             <div className="relative">
               {/* Panel respuestas rápidas */}
               {showQuickReplies && isHuman && (
-                <div className="absolute bottom-full mb-2 left-0 right-0 bg-[#0d1424] border border-slate-700 rounded-xl shadow-xl z-10 max-h-64 overflow-y-auto">
-                  <div className="p-2 border-b border-slate-800 sticky top-0 bg-[#0d1424]">
+                <div className="absolute bottom-full mb-2 left-0 right-0 bg-[#0d1424] border border-slate-700 rounded-xl shadow-xl z-10 max-h-72 overflow-y-auto">
+                  {/* Header: search + add button */}
+                  <div className="p-2 border-b border-slate-800 sticky top-0 bg-[#0d1424] flex gap-2">
                     <input
                       value={qrSearch}
-                      onChange={e => setQrSearch(e.target.value)}
+                      onChange={e => { setQrSearch(e.target.value); setShowAddQR(false); }}
                       placeholder="Buscar respuesta rápida..."
-                      className="input-field text-xs py-1.5"
-                      autoFocus
+                      className="input-field text-xs py-1.5 flex-1"
+                      autoFocus={!showAddQR}
                     />
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddQR(!showAddQR); setQrSearch(''); }}
+                      className={clsx('p-1.5 rounded-lg border transition-all shrink-0',
+                        showAddQR
+                          ? 'bg-green-500/20 text-green-400 border-green-500/30'
+                          : 'text-slate-500 hover:text-green-400 border-slate-700 hover:border-green-500/30 hover:bg-green-500/10'
+                      )}
+                      title="Agregar respuesta rápida"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
                   </div>
+
+                  {/* Add form */}
+                  {showAddQR && (
+                    <div className="p-3 border-b border-slate-800 bg-slate-900/40 space-y-2">
+                      <input
+                        value={newQRTitle}
+                        onChange={e => setNewQRTitle(e.target.value)}
+                        placeholder="Título (ej: Bienvenida)"
+                        className="input-field text-xs py-1.5 w-full"
+                        autoFocus
+                      />
+                      <textarea
+                        value={newQRBody}
+                        onChange={e => setNewQRBody(e.target.value)}
+                        placeholder="Mensaje completo..."
+                        rows={3}
+                        className="input-field text-xs py-1.5 w-full resize-none"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddQR(false); setNewQRTitle(''); setNewQRBody(''); }}
+                          className="flex-1 text-xs py-1.5 rounded-lg border border-slate-700 text-slate-500 hover:text-slate-300 transition-all"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveQR}
+                          disabled={savingQR || !newQRTitle.trim() || !newQRBody.trim()}
+                          className="flex-1 text-xs py-1.5 rounded-lg bg-green-600/20 border border-green-500/30 text-green-400 hover:bg-green-600/40 disabled:opacity-50 transition-all flex items-center justify-center gap-1"
+                        >
+                          {savingQR ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                          Guardar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* List */}
                   {quickReplies
                     .filter(qr => !qrSearch || qr.title.toLowerCase().includes(qrSearch.toLowerCase()) || qr.body.toLowerCase().includes(qrSearch.toLowerCase()))
                     .map(qr => (
-                      <button
-                        key={qr.id}
-                        type="button"
-                        onClick={() => { setText(qr.body); setShowQuickReplies(false); setQrSearch(''); }}
-                        className="w-full text-left px-3 py-2.5 hover:bg-slate-800/60 border-b border-slate-800/40 last:border-0"
-                      >
-                        <p className="text-xs font-medium text-white">{qr.title}</p>
-                        <p className="text-xs text-slate-500 truncate">{qr.body}</p>
-                      </button>
+                      <div key={qr.id} className="flex items-start border-b border-slate-800/40 last:border-0 group/qr hover:bg-slate-800/60">
+                        <button
+                          type="button"
+                          onClick={() => { setText(qr.body); setShowQuickReplies(false); setQrSearch(''); }}
+                          className="flex-1 text-left px-3 py-2.5"
+                        >
+                          <p className="text-xs font-medium text-white">{qr.title}</p>
+                          <p className="text-xs text-slate-500 truncate">{qr.body}</p>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteQR(qr.id, e)}
+                          className="opacity-0 group-hover/qr:opacity-100 p-2 m-1 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0"
+                          title="Eliminar respuesta rápida"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     ))
                   }
-                  {quickReplies.filter(qr => !qrSearch || qr.title.toLowerCase().includes(qrSearch.toLowerCase()) || qr.body.toLowerCase().includes(qrSearch.toLowerCase())).length === 0 && (
+                  {quickReplies.filter(qr => !qrSearch || qr.title.toLowerCase().includes(qrSearch.toLowerCase()) || qr.body.toLowerCase().includes(qrSearch.toLowerCase())).length === 0 && !showAddQR && (
                     <p className="text-xs text-slate-600 text-center py-4">Sin resultados</p>
                   )}
                 </div>
@@ -550,15 +668,21 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
   );
 }
 
-function MessageBubble({ msg, onVoucherClick }: { msg: Message; onVoucherClick: () => void }) {
+function MessageBubble({ msg, onVoucherClick, onDelete, deletingId }: {
+  msg: Message;
+  onVoucherClick: () => void;
+  onDelete: (id: string) => void;
+  deletingId: string | null;
+}) {
   const isInbound = msg.direction === 'inbound';
   const isBot = msg.sender_type === 'bot';
   const isAgent = msg.sender_type === 'agent';
+  const canDelete = !isInbound; // solo mensajes outbound (bot/agente)
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
   return (
-    <div className={clsx('flex gap-2', isInbound ? 'justify-start' : 'justify-end')}>
+    <div className={clsx('flex gap-2 group/msg', isInbound ? 'justify-start' : 'justify-end')}>
       {isInbound && (
         <div className="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center shrink-0 mt-1">
           <span className="text-xs">👤</span>
@@ -620,11 +744,26 @@ function MessageBubble({ msg, onVoucherClick }: { msg: Message; onVoucherClick: 
           </div>
         )}
 
-        {/* Timestamp */}
-        <p className={clsx('text-[10px] mt-1', isInbound ? 'text-slate-600' : 'text-right text-slate-600')}>
-          {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
-          {!isInbound && <CheckCheck className="inline w-3 h-3 ml-1 text-blue-400" />}
-        </p>
+        {/* Timestamp + delete */}
+        <div className={clsx('flex items-center gap-1 mt-1', isInbound ? 'justify-start' : 'justify-end')}>
+          {canDelete && (
+            <button
+              onClick={() => onDelete(msg.id)}
+              disabled={deletingId === msg.id}
+              className="opacity-0 group-hover/msg:opacity-100 text-slate-600 hover:text-red-400 transition-all p-0.5 rounded disabled:opacity-30"
+              title="Eliminar mensaje"
+            >
+              {deletingId === msg.id
+                ? <Loader2 className="w-3 h-3 animate-spin" />
+                : <Trash2 className="w-3 h-3" />
+              }
+            </button>
+          )}
+          <p className="text-[10px] text-slate-600">
+            {format(new Date(msg.created_at), 'HH:mm', { locale: es })}
+            {!isInbound && <CheckCheck className="inline w-3 h-3 ml-1 text-blue-400" />}
+          </p>
+        </div>
       </div>
 
       {!isInbound && (

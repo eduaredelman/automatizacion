@@ -32,6 +32,7 @@ interface ChatState {
   activeConversationId: string | null;
   messages: Record<string, Message[]>;
   unreadTotal: number;
+  pendingOpenPhone: string | null;
   setConversations: (convs: Conversation[]) => void;
   setActiveConversation: (id: string | null) => void;
   addMessage: (msg: Message) => void;
@@ -40,6 +41,8 @@ interface ChatState {
   prependConversation: (conv: Conversation) => void;
   markRead: (id: string) => void;
   computeUnread: () => void;
+  removeMessage: (conversationId: string, messageId: string) => void;
+  setPendingOpenPhone: (phone: string | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -47,6 +50,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeConversationId: null,
   messages: {},
   unreadTotal: 0,
+  pendingOpenPhone: null,
 
   setConversations: (convs) => {
     set({ conversations: convs });
@@ -108,4 +112,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const total = get().conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
     set({ unreadTotal: total });
   },
+
+  removeMessage: (conversationId, messageId) => {
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [conversationId]: (state.messages[conversationId] || []).filter(m => m.id !== messageId),
+      },
+    }));
+  },
+
+  setPendingOpenPhone: (phone) => set({ pendingOpenPhone: phone }),
 }));

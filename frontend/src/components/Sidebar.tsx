@@ -5,7 +5,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { useChatStore } from '@/store/chat.store';
 import {
   LayoutDashboard, MessageSquare, CreditCard,
-  LogOut, Wifi, ChevronRight, Bot, Calendar
+  LogOut, Wifi, ChevronRight, Bot, Calendar, Users, Send
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -14,10 +14,12 @@ interface SidebarProps {
 }
 
 const NAV = [
-  { href: '/dashboard',           label: 'Dashboard',       icon: LayoutDashboard },
-  { href: '/dashboard/chats',     label: 'Chats',           icon: MessageSquare },
-  { href: '/dashboard/payments',  label: 'Pagos',           icon: CreditCard },
-  { href: '/dashboard/scheduler', label: 'Automatizaciones',icon: Calendar },
+  { href: '/dashboard',            label: 'Dashboard',        icon: LayoutDashboard },
+  { href: '/dashboard/chats',      label: 'Chats',            icon: MessageSquare },
+  { href: '/dashboard/payments',   label: 'Pagos',            icon: CreditCard },
+  { href: '/dashboard/contacts',   label: 'Contactos',        icon: Users },
+  { href: '/dashboard/campaigns',  label: 'Campañas',         icon: Send },
+  { href: '/dashboard/scheduler',  label: 'Automatizaciones', icon: Calendar },
 ];
 
 export default function Sidebar({ onLogout }: SidebarProps) {
