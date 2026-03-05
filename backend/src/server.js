@@ -7,7 +7,6 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
-const fs     = require('fs');
 const logger = require('./utils/logger');
 const { query, checkConnection } = require('./config/database');
 const { initSocket } = require('./config/socket');
@@ -133,27 +132,90 @@ server.listen(PORT, async () => {
   const dbOk = await checkConnection();
   if (dbOk) {
     logger.info('✅ PostgreSQL connected');
-    // Aplicar migraciones pendientes
-    try {
-      const migrationPath = path.join(__dirname, '../../database/migrations/001_contacts_campaigns.sql');
-      if (fs.existsSync(migrationPath)) {
-        const sql = fs.readFileSync(migrationPath, 'utf8');
-        await query(sql);
-        logger.info('✅ Migration 001_contacts_campaigns applied');
+    // Aplicar migraciones pendientes (SQL inline — no depende de archivos externos)
+    const MIGRATIONS = [
+      {
+        name: '001_contacts_campaigns',
+        sql: `
+          CREATE TABLE IF NOT EXISTS clients (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            wisphub_id VARCHAR(50) UNIQUE,
+            phone VARCHAR(20),
+            name VARCHAR(150),
+            email VARCHAR(150),
+            service_id VARCHAR(50),
+            plan VARCHAR(100),
+            address TEXT,
+            service_status VARCHAR(20) DEFAULT 'activo',
+            tags TEXT[] DEFAULT '{}',
+            plan_price NUMERIC(10,2),
+            debt_amount NUMERIC(10,2),
+            fecha_registro DATE,
+            wisphub_raw JSONB,
+            last_synced_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          CREATE TABLE IF NOT EXISTS quick_replies (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            title VARCHAR(100) NOT NULL,
+            body TEXT NOT NULL,
+            tags TEXT[] DEFAULT '{}',
+            created_by UUID REFERENCES agents(id) ON DELETE SET NULL,
+            is_global BOOLEAN DEFAULT true,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          CREATE TABLE IF NOT EXISTS mass_campaigns (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            name VARCHAR(150) NOT NULL,
+            message TEXT NOT NULL,
+            status VARCHAR(20) DEFAULT 'draft',
+            created_by UUID REFERENCES agents(id) ON DELETE SET NULL,
+            started_at TIMESTAMPTZ,
+            finished_at TIMESTAMPTZ,
+            total_recipients INT DEFAULT 0,
+            sent_count INT DEFAULT 0,
+            error_count INT DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          CREATE TABLE IF NOT EXISTS campaign_recipients (
+            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            campaign_id UUID REFERENCES mass_campaigns(id) ON DELETE CASCADE,
+            client_id UUID REFERENCES clients(id) ON DELETE SET NULL,
+            phone VARCHAR(20) NOT NULL,
+            name VARCHAR(150),
+            status VARCHAR(20) DEFAULT 'pending',
+            sent_at TIMESTAMPTZ,
+            error_message TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          ALTER TABLE conversations ADD COLUMN IF NOT EXISTS client_id UUID REFERENCES clients(id) ON DELETE SET NULL;
+          ALTER TABLE clients ADD COLUMN IF NOT EXISTS wisphub_raw JSONB;
+          ALTER TABLE clients ADD COLUMN IF NOT EXISTS plan_price NUMERIC(10,2);
+          ALTER TABLE clients ADD COLUMN IF NOT EXISTS fecha_registro DATE;
+          CREATE INDEX IF NOT EXISTS idx_clients_wisphub_id ON clients(wisphub_id);
+          CREATE INDEX IF NOT EXISTS idx_clients_phone ON clients(phone);
+        `,
+      },
+      {
+        name: '002_message_edit_softdelete',
+        sql: `
+          ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_edited  BOOLEAN     DEFAULT false;
+          ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at  TIMESTAMPTZ;
+          ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN     DEFAULT false;
+          ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+        `,
+      },
+    ];
+    for (const m of MIGRATIONS) {
+      try {
+        await query(m.sql);
+        logger.info(`✅ Migration ${m.name} applied`);
+      } catch (err) {
+        logger.warn(`Migration ${m.name} warning:`, err.message);
       }
-    } catch (err) {
-      // Las migraciones idempotentes (IF NOT EXISTS / IF EXISTS) no fallan en re-ejecución
-      logger.warn('Migration warning (may already be applied):', err.message);
-    }
-    try {
-      const migration002 = path.join(__dirname, '../../database/migrations/002_message_edit_softdelete.sql');
-      if (fs.existsSync(migration002)) {
-        const sql = fs.readFileSync(migration002, 'utf8');
-        await query(sql);
-        logger.info('✅ Migration 002_message_edit_softdelete applied');
-      }
-    } catch (err) {
-      logger.warn('Migration 002 warning (may already be applied):', err.message);
     }
     // Iniciar scheduler DESPUÉS de confirmar que la DB está lista
     initScheduler();
