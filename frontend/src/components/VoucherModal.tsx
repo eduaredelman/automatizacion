@@ -24,10 +24,15 @@ interface Payment {
   created_at: string;
 }
 
+interface WisphubResult {
+  registered: boolean;
+  error?: string | null;
+}
+
 interface VoucherModalProps {
   payment: Payment;
   onClose: () => void;
-  onValidate: (notes?: string) => Promise<void>;
+  onValidate: (notes?: string) => Promise<WisphubResult>;
   onReject: (reason: string) => Promise<void>;
 }
 
@@ -61,6 +66,7 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
   const [showRejectInput, setShowRejectInput] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notes, setNotes] = useState('');
+  const [wisphubResult, setWisphubResult] = useState<WisphubResult | null>(null);
 
   const imageUrl = payment.voucher_url ? `${API_URL}${payment.voucher_url}` : null;
   const confidence = payment.ocr_confidence as keyof typeof CONFIDENCE_COLORS;
@@ -70,7 +76,12 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
   const handleValidate = async () => {
     setLoading(true);
     try {
-      await onValidate(notes || undefined);
+      const result = await onValidate(notes || undefined);
+      setWisphubResult(result);
+      // Auto-cierre después de 2.5 s si WispHub fue exitoso
+      if (result.registered) {
+        setTimeout(onClose, 2500);
+      }
     } finally {
       setLoading(false);
     }
@@ -201,8 +212,28 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
               </p>
             </div>
 
+            {/* WispHub registration result */}
+            {wisphubResult && (
+              <div className={clsx(
+                'mt-3 p-3 rounded-xl border text-xs flex items-start gap-2',
+                wisphubResult.registered
+                  ? 'bg-green-500/10 border-green-500/30 text-green-300'
+                  : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300'
+              )}>
+                <span className="text-base leading-none shrink-0">
+                  {wisphubResult.registered ? '✅' : '⚠️'}
+                </span>
+                <span>
+                  {wisphubResult.registered
+                    ? 'Pago registrado en WispHub correctamente'
+                    : `No se pudo registrar en WispHub: ${wisphubResult.error || 'error desconocido'}`
+                  }
+                </span>
+              </div>
+            )}
+
             {/* Actions */}
-            {canAction && (
+            {canAction && !wisphubResult && (
               <div className="mt-4 space-y-3">
                 {!showRejectInput ? (
                   <>

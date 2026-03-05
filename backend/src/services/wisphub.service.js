@@ -387,25 +387,54 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 // REGISTRAR PAGO
 // ─────────────────────────────────────────────────────────────
 
+// Mapeo de métodos de pago → ID forma_pago en WispHub.
+// Los IDs dependen de la configuración de tu cuenta WispHub.
+// Configura con variables de entorno WISPHUB_FORMA_PAGO_* si los IDs difieren.
+const FORMA_PAGO_IDS = {
+  efectivo:   parseInt(process.env.WISPHUB_FORMA_PAGO_EFECTIVO   || '1'),
+  yape:       parseInt(process.env.WISPHUB_FORMA_PAGO_YAPE       || '1'),
+  plin:       parseInt(process.env.WISPHUB_FORMA_PAGO_PLIN       || '1'),
+  bcp:        parseInt(process.env.WISPHUB_FORMA_PAGO_BCP        || '1'),
+  interbank:  parseInt(process.env.WISPHUB_FORMA_PAGO_INTERBANK  || '1'),
+  bbva:       parseInt(process.env.WISPHUB_FORMA_PAGO_BBVA       || '1'),
+  scotiabank: parseInt(process.env.WISPHUB_FORMA_PAGO_SCOTIABANK || '1'),
+  transfer:   parseInt(process.env.WISPHUB_FORMA_PAGO_TRANSFER   || '1'),
+};
+
 // Endpoint confirmado en proyecto fiber-peru con Culqi:
 // POST /facturas/{id_servicio}/registrar-pago/
 // Campos: monto, forma_pago (int), accion (int), fecha_pago (YYYY-MM-DD HH:MM), referencia
 const registrarPago = async (clienteId, paymentData) => {
-  const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
-  const fechaPago = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+  // Usar fecha real del pago si está disponible, si no, fecha/hora actual
+  let fechaPago;
+  if (paymentData.paymentDate) {
+    // paymentDate viene como DATE de PostgreSQL ('2026-03-04' o Date object)
+    const d = new Date(paymentData.paymentDate);
+    // Sumar 1 día por desfase UTC → asegura que la fecha local sea correcta
+    d.setMinutes(d.getMinutes() + d.getTimezoneOffset());
+    fechaPago = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 00:00`;
+  } else {
+    const now = new Date();
+    fechaPago = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  }
+
+  const metodo = (paymentData.method || '').toLowerCase();
+  const formaPago = FORMA_PAGO_IDS[metodo] ?? FORMA_PAGO_IDS.efectivo;
 
   const body = {
     monto: paymentData.amount,
-    forma_pago: 1,   // ID del método de pago en WispHub
-    accion: 1,        // 1 = Pago completo
+    forma_pago: formaPago,
+    accion: 1,  // 1 = Pago completo
     fecha_pago: fechaPago,
-    descripcion: `Pago vía WhatsApp - Bot FiberPeru - ${paymentData.method || ''}`,
+    descripcion: `Pago vía WhatsApp - ${paymentData.method?.toUpperCase() || 'Bot FiberPeru'}`,
     referencia: paymentData.operationCode || '',
   };
 
+  logger.info('WispHub: registrando pago', { clienteId, monto: body.monto, fecha: fechaPago, metodo, formaPago });
   const { data } = await http.post(`/facturas/${clienteId}/registrar-pago/`, body);
-  logger.info('WispHub: pago registrado exitosamente', { clienteId, facturaEndpoint: `/facturas/${clienteId}/registrar-pago/`, monto: body.monto });
+  logger.info('WispHub: pago registrado exitosamente', { clienteId, monto: body.monto });
   return data;
 };
 

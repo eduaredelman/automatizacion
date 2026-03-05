@@ -26,6 +26,7 @@ interface Payment {
   payer_name: string | null;
   payment_date: string | null;
   rejection_reason: string | null;
+  registered_wisphub: boolean;
   created_at: string;
 }
 
@@ -264,9 +265,21 @@ export default function PaymentsPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3.5">
-                        <span className={STATUS_BADGE[p.status] || 'badge'}>
-                          {STATUS_LABELS[p.status] || p.status}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span className={STATUS_BADGE[p.status] || 'badge'}>
+                            {STATUS_LABELS[p.status] || p.status}
+                          </span>
+                          {p.status === 'validated' && (
+                            <span className={clsx(
+                              'text-[10px] px-1.5 py-0.5 rounded font-medium w-fit',
+                              p.registered_wisphub
+                                ? 'text-emerald-400 bg-emerald-500/10'
+                                : 'text-yellow-500 bg-yellow-500/10'
+                            )}>
+                              {p.registered_wisphub ? '✓ WispHub' : '! WispHub'}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3.5">
                         <span className={clsx(
@@ -339,11 +352,12 @@ export default function PaymentsPage() {
       {selectedPayment && (
         <VoucherModal
           payment={selectedPayment}
-          onClose={() => setSelectedPayment(null)}
+          onClose={() => { setSelectedPayment(null); load(); }}
           onValidate={async (notes) => {
-            await api.validatePayment(selectedPayment.id, notes);
-            setSelectedPayment(null);
+            const res = await api.validatePayment(selectedPayment.id, notes);
+            const d = res.data?.data;
             load();
+            return { registered: d?.wisphub_registered ?? false, error: d?.wisphub_error ?? null };
           }}
           onReject={async (reason) => {
             await api.rejectPayment(selectedPayment.id, reason);

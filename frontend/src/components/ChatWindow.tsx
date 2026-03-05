@@ -815,9 +815,10 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
           payment={selectedVoucher}
           onClose={() => setSelectedVoucher(null)}
           onValidate={async (notes) => {
-            await api.validatePayment(selectedVoucher.id, notes);
+            const res = await api.validatePayment(selectedVoucher.id, notes);
+            const d = res.data?.data;
             loadMessages();
-            setSelectedVoucher(null);
+            return { registered: d?.wisphub_registered ?? false, error: d?.wisphub_error ?? null };
           }}
           onReject={async (reason) => {
             await api.rejectPayment(selectedVoucher.id, reason);

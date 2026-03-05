@@ -1,6 +1,7 @@
 const { query } = require('../config/database');
 const { success, error, paginated } = require('../utils/response');
 const logger = require('../utils/logger');
+const wisphub = require('../services/wisphub.service');
 
 // GET /api/payments - List all payments
 const listPayments = async (req, res) => {
@@ -92,7 +93,7 @@ const getPayment = async (req, res) => {
   }
 };
 
-// PATCH /api/payments/:id/validate - Manual validation by agent
+// PATCH /api/payments/:id/validate - Manual validation by agent + auto-register in WispHub
 const validatePayment = async (req, res) => {
   try {
     const { id } = req.params;
@@ -109,15 +110,56 @@ const validatePayment = async (req, res) => {
     );
 
     if (!result.rows.length) return error(res, 'Pago no encontrado', 404);
+    const payment = result.rows[0];
 
     await query(
       `INSERT INTO events (conversation_id, payment_id, agent_id, event_type, description)
        VALUES ($1, $2, $3, 'payment_validated_manual', 'Pago validado manualmente por agente')`,
-      [result.rows[0].conversation_id, id, req.agent.id]
+      [payment.conversation_id, id, req.agent.id]
     );
 
-    return success(res, result.rows[0], 'Pago validado');
+    // ── Registrar automáticamente en WispHub ─────────────────────────────
+    let wisphubRegistered = false;
+    let wisphubError = null;
+
+    if (payment.client_id) {
+      try {
+        const clientResult = await query(
+          'SELECT wisphub_id FROM clients WHERE id = $1',
+          [payment.client_id]
+        );
+        const wisphubId = clientResult.rows[0]?.wisphub_id;
+
+        if (wisphubId) {
+          await wisphub.registrarPago(wisphubId, {
+            amount:        payment.amount,
+            method:        payment.payment_method,
+            operationCode: payment.operation_code,
+            paymentDate:   payment.payment_date,
+          });
+          await query('UPDATE payments SET registered_wisphub = true WHERE id = $1', [id]);
+          wisphubRegistered = true;
+        } else {
+          wisphubError = 'Cliente sin ID WispHub vinculado';
+          logger.warn('WispHub: no wisphub_id para client_id', { clientId: payment.client_id, paymentId: id });
+        }
+      } catch (err) {
+        wisphubError = err.response?.data?.detail || err.response?.data?.message || err.message;
+        logger.warn('WispHub: registro automático fallido', { paymentId: id, error: wisphubError });
+      }
+    } else {
+      wisphubError = 'Pago sin cliente vinculado en el CRM';
+      logger.warn('WispHub: pago sin client_id', { paymentId: id });
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    const msg = wisphubRegistered
+      ? 'Pago validado y registrado en WispHub ✅'
+      : `Pago validado (WispHub: ${wisphubError || 'no registrado'})`;
+
+    return success(res, { ...payment, wisphub_registered: wisphubRegistered, wisphub_error: wisphubError }, msg);
   } catch (err) {
+    logger.error('validatePayment error', { error: err.message });
     return error(res, 'Error al validar pago');
   }
 };
