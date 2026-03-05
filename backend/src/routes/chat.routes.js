@@ -5,7 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const {
   listChats, getChat, sendMessage, sendMedia, startNewChat,
   takeover, release, getPayments, resolve, updateName,
-  archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage
+  archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage, editMessage
 } = require('../controllers/chat.controller');
 
 // Multer: memoria, 25 MB, tipos permitidos
@@ -17,6 +17,15 @@ const upload = multer({
       'image/jpeg', 'image/png', 'image/gif', 'image/webp',
       'application/pdf',
       'audio/mpeg', 'audio/ogg', 'audio/mp4', 'audio/aac', 'audio/wav',
+      // Word
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      // Excel
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      // PowerPoint
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     ];
     cb(null, allowed.includes(file.mimetype));
   },
@@ -38,6 +47,7 @@ router.post('/:id/takeover', takeover);
 router.post('/:id/release', release);
 router.post('/:id/resolve', resolve);
 router.patch('/:id/name', updateName);
+router.patch('/:id/messages/:msgId', editMessage);
 router.delete('/:id/messages/:msgId', deleteMessage);
 router.delete('/:id', archiveChat);
 router.get('/:id/payments', getPayments);

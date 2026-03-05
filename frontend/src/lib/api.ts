@@ -74,8 +74,10 @@ export const api = {
     getApi().post('/chats/quick-replies', { title, body, tags }),
   deleteQuickReply: (id: string) =>
     getApi().delete(`/chats/quick-replies/${id}`),
-  deleteMessage: (chatId: string, msgId: string) =>
-    getApi().delete(`/chats/${chatId}/messages/${msgId}`),
+  deleteMessage: (chatId: string, msgId: string, scope?: 'all') =>
+    getApi().delete(`/chats/${chatId}/messages/${msgId}`, { params: scope ? { scope } : {} }),
+  editMessage: (chatId: string, msgId: string, body: string) =>
+    getApi().patch(`/chats/${chatId}/messages/${msgId}`, { body }),
 
   // Payments
   getPayments: (params?: Record<string, unknown>) =>

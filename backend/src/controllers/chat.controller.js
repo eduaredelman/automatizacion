@@ -26,9 +26,15 @@ const listChats = async (req, res) => {
     const result = await query(
       `SELECT c.*,
         a.name AS agent_name,
-        (SELECT COUNT(*) FROM payments p WHERE p.conversation_id = c.id) AS payment_count
+        (SELECT COUNT(*) FROM payments p WHERE p.conversation_id = c.id) AS payment_count,
+        cl.service_status  AS client_service_status,
+        cl.debt_amount     AS client_debt,
+        cl.plan            AS client_plan,
+        cl.plan_price      AS client_plan_price,
+        cl.wisphub_id      AS client_wisphub_id
        FROM conversations c
        LEFT JOIN agents a ON a.id = c.assigned_to
+       LEFT JOIN clients cl ON cl.id = c.client_id
        ${where}
        ORDER BY c.last_message_at DESC NULLS LAST
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -51,7 +57,11 @@ const getChat = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const convResult = await query(
-      `SELECT c.*, a.name AS agent_name, cl.wisphub_id, cl.plan, cl.debt_amount
+      `SELECT c.*, a.name AS agent_name,
+        cl.wisphub_id, cl.plan, cl.debt_amount,
+        cl.service_status  AS client_service_status,
+        cl.plan_price      AS client_plan_price,
+        cl.name            AS client_name
        FROM conversations c
        LEFT JOIN agents a ON a.id = c.assigned_to
        LEFT JOIN clients cl ON cl.id = c.client_id
@@ -244,9 +254,33 @@ const getPayments = async (req, res) => {
 const resolve = async (req, res) => {
   try {
     const { id } = req.params;
-    await query(`UPDATE conversations SET status = 'resolved' WHERE id = $1`, [id]);
+
+    // Cerrar sesión de takeover activa si existe
+    await query(
+      `UPDATE takeover_sessions SET is_active = false, ended_at = NOW()
+       WHERE conversation_id = $1 AND is_active = true`,
+      [id]
+    );
+
+    // Marcar como resuelta y liberar agente asignado
+    await query(
+      `UPDATE conversations SET status = 'resolved', assigned_to = NULL WHERE id = $1`,
+      [id]
+    );
+
+    // Log del evento
+    await query(
+      `INSERT INTO events (conversation_id, agent_id, event_type, description)
+       VALUES ($1, $2, 'conversation_resolved', 'Conversación marcada como resuelta por el agente')`,
+      [id, req.agent?.id || null]
+    ).catch(() => {});
+
+    // Emitir al frontend para que todos los agentes vean el cambio
+    emitToAgents('conversation_update', { conversationId: id, status: 'resolved', agent: null });
+
     return success(res, {}, 'Conversación resuelta');
   } catch (err) {
+    logger.error('resolve error', { error: err.message });
     return error(res, 'Error al resolver conversación');
   }
 };
@@ -457,10 +491,45 @@ const startNewChat = async (req, res) => {
   }
 };
 
-// DELETE /api/chats/:id/messages/:msgId - Delete a bot/agent message from the CRM
+// PATCH /api/chats/:id/messages/:msgId - Edit a bot/agent message body
+const editMessage = async (req, res) => {
+  try {
+    const { id, msgId } = req.params;
+    const { body } = req.body;
+    if (!body?.trim()) return error(res, 'Contenido requerido', 400);
+
+    const check = await query(
+      'SELECT * FROM messages WHERE id = $1 AND conversation_id = $2',
+      [msgId, id]
+    );
+    if (!check.rows.length) return error(res, 'Mensaje no encontrado', 404);
+    if (check.rows[0].sender_type === 'client') return error(res, 'No se puede editar mensajes del cliente', 403);
+    if (check.rows[0].message_type !== 'text') return error(res, 'Solo se pueden editar mensajes de texto', 400);
+
+    const result = await query(
+      `UPDATE messages SET body = $1, is_edited = true, edited_at = NOW() WHERE id = $2
+       RETURNING id, conversation_id, body, is_edited, edited_at`,
+      [body.trim(), msgId]
+    );
+
+    const updated = result.rows[0];
+    emitToConversation(id, 'message_edited', updated);
+    emitToAgents('message_edited', updated);
+
+    return success(res, updated, 'Mensaje editado');
+  } catch (err) {
+    logger.error('editMessage error', { error: err.message });
+    return error(res, 'Error al editar mensaje');
+  }
+};
+
+// DELETE /api/chats/:id/messages/:msgId - Delete a bot/agent message
+// ?scope=all → soft delete (show placeholder); default → hard delete (remove from CRM)
 const deleteMessage = async (req, res) => {
   try {
     const { id, msgId } = req.params;
+    const scope = req.query.scope; // 'all' | undefined
+
     const check = await query(
       'SELECT * FROM messages WHERE id = $1 AND conversation_id = $2',
       [msgId, id]
@@ -468,8 +537,20 @@ const deleteMessage = async (req, res) => {
     if (!check.rows.length) return error(res, 'Mensaje no encontrado', 404);
     if (check.rows[0].sender_type === 'client') return error(res, 'No se puede eliminar mensajes del cliente', 403);
 
-    await query('DELETE FROM messages WHERE id = $1', [msgId]);
+    if (scope === 'all') {
+      // Soft delete — keeps row, clears content, shows placeholder
+      await query(
+        `UPDATE messages SET is_deleted = true, deleted_at = NOW(), body = NULL, media_url = NULL
+         WHERE id = $1`,
+        [msgId]
+      );
+      emitToConversation(id, 'message_deleted_for_all', { messageId: msgId, conversationId: id });
+      emitToAgents('message_deleted_for_all', { messageId: msgId, conversationId: id });
+      return success(res, { messageId: msgId }, 'Mensaje eliminado para todos');
+    }
 
+    // Hard delete — removes from CRM only
+    await query('DELETE FROM messages WHERE id = $1', [msgId]);
     emitToConversation(id, 'message_deleted', { messageId: msgId, conversationId: id });
     emitToAgents('message_deleted', { messageId: msgId, conversationId: id });
 
@@ -480,4 +561,4 @@ const deleteMessage = async (req, res) => {
   }
 };
 
-module.exports = { listChats, getChat, sendMessage, sendMedia, startNewChat, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage };
+module.exports = { listChats, getChat, sendMessage, sendMedia, startNewChat, takeover, release, getPayments, resolve, updateName, archiveChat, getQuickReplies, createQuickReply, deleteQuickReply, deleteMessage, editMessage };

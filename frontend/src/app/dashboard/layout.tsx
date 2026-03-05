@@ -50,13 +50,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       display_name?: string;
       client_id?: string;
       bot_intent?: string;
+      client_service_status?: string;
+      client_debt?: number;
+      client_plan?: string;
+      client_plan_price?: number;
     }) => {
-      const { conversationId, status, agent, display_name, bot_intent } = data;
+      const { conversationId, status, agent, display_name, bot_intent,
+              client_service_status, client_debt, client_plan, client_plan_price } = data;
       updateConversation(conversationId, {
-        ...(status       !== undefined && { status }),
-        ...(agent        !== undefined && { agent_name: agent?.name }),
-        ...(display_name !== undefined && { display_name }),
-        ...(bot_intent   !== undefined && { bot_intent }),
+        ...(status                 !== undefined && { status }),
+        ...(agent                  !== undefined && { agent_name: agent?.name }),
+        ...(display_name           !== undefined && { display_name }),
+        ...(bot_intent             !== undefined && { bot_intent }),
+        ...(client_service_status  !== undefined && { client_service_status }),
+        ...(client_debt            !== undefined && { client_debt }),
+        ...(client_plan            !== undefined && { client_plan }),
+        ...(client_plan_price      !== undefined && { client_plan_price }),
       });
       if (status === 'human') {
         playSound('takeover');

@@ -69,12 +69,19 @@ const receive = async (req, res) => {
     // ── AUTO-LINK: Si el teléfono ya está en la tabla clients (sync WispHub previo),
     // vincular la conversación INMEDIATAMENTE sin esperar que el cliente escriba su nombre.
     if (!conversation.client_id) {
-      const phoneShort = phone.startsWith('51') ? phone.slice(2) : phone;
+      // Generar variantes del número para match robusto (con/sin prefijo 51, solo dígitos)
+      const phoneDigits = phone.replace(/\D/g, '');
+      const phoneVariants = [...new Set([
+        phoneDigits,
+        phoneDigits.startsWith('51') ? phoneDigits.slice(2) : phoneDigits,
+        phoneDigits.startsWith('51') ? phoneDigits : `51${phoneDigits}`,
+      ])].filter(p => p.length >= 7);
+
       const clientLookup = await query(
-        `SELECT id, name, wisphub_id FROM clients
-         WHERE (phone = $1 OR phone = $2) AND phone != '' AND wisphub_id IS NOT NULL
+        `SELECT id, name, wisphub_id, service_status, debt_amount, plan, plan_price FROM clients
+         WHERE phone = ANY($1::text[]) AND phone != '' AND wisphub_id IS NOT NULL
          LIMIT 1`,
-        [phone, phoneShort]
+        [phoneVariants]
       ).catch(() => ({ rows: [] }));
 
       if (clientLookup.rows.length) {
@@ -87,15 +94,24 @@ const receive = async (req, res) => {
            WHERE id = $3 AND client_id IS NULL`,
           [found.id, found.name, conversation.id]
         );
-        conversation = { ...conversation, client_id: found.id, display_name: found.name, bot_intent: 'identity_ok' };
+        conversation = {
+          ...conversation,
+          client_id: found.id,
+          display_name: found.name,
+          bot_intent: 'identity_ok',
+        };
         const { emitToAgents } = require('../config/socket');
         emitToAgents('conversation_update', {
           conversationId: conversation.id,
           display_name: found.name,
           client_id: found.id,
           bot_intent: 'identity_ok',
+          client_service_status: found.service_status,
+          client_debt: found.debt_amount,
+          client_plan: found.plan,
+          client_plan_price: found.plan_price,
         });
-        logger.info('Auto-vinculado cliente WispHub por teléfono', { phone, name: found.name, wisphub_id: found.wisphub_id });
+        logger.info('Auto-vinculado cliente WispHub por teléfono', { phone, name: found.name, wisphub_id: found.wisphub_id, service_status: found.service_status });
       }
     }
 
@@ -113,6 +129,15 @@ const receive = async (req, res) => {
 
     const message = msgResult.rows[0];
     if (!message) return; // duplicado
+
+    // ¿Conversación resuelta? → re-abrir como bot cuando el cliente escribe de nuevo
+    if (conversation.status === 'resolved') {
+      await query(`UPDATE conversations SET status = 'bot' WHERE id = $1`, [conversation.id]);
+      conversation = { ...conversation, status: 'bot', wasResolved: true };
+      const { emitToAgents } = require('../config/socket');
+      emitToAgents('conversation_update', { conversationId: conversation.id, status: 'bot' });
+      logger.info('🔄 Conversación resuelta reabierta automáticamente por nuevo mensaje', { phone });
+    }
 
     // ¿Asesor en control? → emitir al panel y no responder
     if (conversation.status === 'human') {
@@ -530,7 +555,10 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
       rawDisplayName.trim().length > 2 &&
       (rawDisplayName.includes(' ') || /^[A-Za-zÀ-ÿ\s]+$/.test(rawDisplayName));
 
-    let clientInfo = { name: isRealName ? rawDisplayName : 'Cliente' };
+    let clientInfo = {
+      name: isRealName ? rawDisplayName : 'Cliente',
+      wasResolved: conversation.wasResolved || false,
+    };
 
     if (conversation.client_id) {
       try {
@@ -553,6 +581,13 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
               clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
               clientInfo.monto_mensual     = debtInfo.monto_mensual;
               clientInfo.periodos          = debtInfo.periodos;
+              // Persistir deuda real en la tabla clients para que aparezca en el CRM sin que el cliente vuelva a escribir
+              if (debtInfo.monto_deuda != null) {
+                query(
+                  `UPDATE clients SET debt_amount = $1, updated_at = NOW() WHERE id = $2`,
+                  [debtInfo.monto_deuda, conversation.client_id]
+                ).catch(() => {});
+              }
             } catch {}
           }
         }
@@ -560,6 +595,21 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
         logger.warn('No se pudo obtener clientInfo', { error: e.message });
       }
     }
+
+    // Verificar si ya existe un pago reciente en esta conversación
+    // Esto evita que la IA pida comprobante de nuevo si el cliente ya pagó
+    try {
+      const recentPayRes = await query(
+        `SELECT status, amount, operation_code, created_at
+         FROM payments
+         WHERE conversation_id = $1
+         ORDER BY created_at DESC LIMIT 1`,
+        [conversation.id]
+      );
+      if (recentPayRes.rows.length) {
+        clientInfo.recentPayment = recentPayRes.rows[0];
+      }
+    } catch {}
 
     // 5. ¿Quiere hablar con humano?
     const quiereHumano = /asesor|agente|humano|persona|hablar con alguien|no entiendo/i.test(text);

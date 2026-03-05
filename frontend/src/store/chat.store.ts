@@ -9,9 +9,12 @@ interface Message {
   body: string | null;
   media_url: string | null;
   media_mime: string | null;
+  media_filename: string | null;
   whatsapp_status: string;
   agent_name?: string;
   created_at: string;
+  is_edited?: boolean;
+  is_deleted?: boolean;
 }
 
 interface Conversation {
@@ -25,6 +28,11 @@ interface Conversation {
   agent_name?: string;
   payment_count?: number;
   bot_intent?: string;
+  client_service_status?: string;
+  client_debt?: number;
+  client_plan?: string;
+  client_plan_price?: number;
+  client_wisphub_id?: string;
 }
 
 interface ChatState {
@@ -42,6 +50,7 @@ interface ChatState {
   markRead: (id: string) => void;
   computeUnread: () => void;
   removeMessage: (conversationId: string, messageId: string) => void;
+  updateMessage: (conversationId: string, messageId: string, updates: Partial<Message>) => void;
   setPendingOpenPhone: (phone: string | null) => void;
 }
 
@@ -118,6 +127,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: {
         ...state.messages,
         [conversationId]: (state.messages[conversationId] || []).filter(m => m.id !== messageId),
+      },
+    }));
+  },
+
+  updateMessage: (conversationId, messageId, updates) => {
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [conversationId]: (state.messages[conversationId] || []).map(m =>
+          m.id === messageId ? { ...m, ...updates } : m
+        ),
       },
     }));
   },

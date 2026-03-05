@@ -14,6 +14,11 @@ interface Conversation {
   unread_count: number;
   payment_count?: number;
   bot_intent?: string;
+  client_service_status?: string;
+  client_debt?: number;
+  client_plan?: string;
+  client_plan_price?: number;
+  client_wisphub_id?: string;
 }
 
 interface ChatListProps {
@@ -169,7 +174,7 @@ export default function ChatList({
                     <p className="text-xs text-slate-500 truncate mt-0.5">
                       {conv.last_message || 'Sin mensajes'}
                     </p>
-                    <div className="flex items-center gap-2 mt-1.5">
+                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                       <span className={clsx(
                         'text-[10px] px-1.5 py-0.5 rounded-md font-medium',
                         conv.status === 'bot'      && 'bg-blue-500/15 text-blue-400',
@@ -179,6 +184,21 @@ export default function ChatList({
                       )}>
                         {conv.status === 'bot' ? <><Bot className="w-2.5 h-2.5 inline mr-0.5" />Bot</> : cfg.label}
                       </span>
+                      {conv.client_service_status === 'cortado' && (
+                        <span className="text-[10px] bg-red-500/15 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded-md font-medium">
+                          ⛔ Cortado
+                        </span>
+                      )}
+                      {conv.client_service_status === 'activo' && (
+                        <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-md font-medium">
+                          ✓ Activo
+                        </span>
+                      )}
+                      {conv.client_debt != null && conv.client_debt > 0 && (
+                        <span className="text-[10px] text-orange-400 font-medium">
+                          💰 S/{conv.client_debt}
+                        </span>
+                      )}
                       {conv.payment_count ? (
                         <span className="text-[10px] text-slate-600">
                           💳 {conv.payment_count}

@@ -145,6 +145,16 @@ server.listen(PORT, async () => {
       // Las migraciones idempotentes (IF NOT EXISTS / IF EXISTS) no fallan en re-ejecución
       logger.warn('Migration warning (may already be applied):', err.message);
     }
+    try {
+      const migration002 = path.join(__dirname, '../../database/migrations/002_message_edit_softdelete.sql');
+      if (fs.existsSync(migration002)) {
+        const sql = fs.readFileSync(migration002, 'utf8');
+        await query(sql);
+        logger.info('✅ Migration 002_message_edit_softdelete applied');
+      }
+    } catch (err) {
+      logger.warn('Migration 002 warning (may already be applied):', err.message);
+    }
     // Iniciar scheduler DESPUÉS de confirmar que la DB está lista
     initScheduler();
   } else {

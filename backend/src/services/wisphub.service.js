@@ -572,8 +572,38 @@ const sincronizarContactos = async (db) => {
     }
   }
 
-  logger.info(`[WISPHUB] Sync completo: ${clientes.length} total, ${created} nuevos, ${updated} actualizados, ${errors} errores`);
-  return { total: clientes.length, created, updated, errors };
+  // ── RETROVINCULACIÓN: Vincular conversaciones existentes sin client_id
+  // Esto asegura que chats históricos (creados antes del sync) también muestren nombre real
+  let linked = 0;
+  try {
+    const retroResult = await db.query(`
+      UPDATE conversations conv
+      SET
+        client_id    = cl.id,
+        display_name = cl.name,
+        bot_intent   = 'identity_ok'
+      FROM clients cl
+      WHERE conv.client_id IS NULL
+        AND cl.wisphub_id IS NOT NULL
+        AND cl.phone != ''
+        AND cl.name != 'N/A'
+        AND (
+          cl.phone = conv.phone
+          OR (conv.phone LIKE '51%' AND cl.phone = SUBSTRING(conv.phone FROM 3))
+          OR (cl.phone LIKE '51%' AND conv.phone = SUBSTRING(cl.phone FROM 3))
+          OR cl.phone = REGEXP_REPLACE(conv.phone, '[^0-9]', '', 'g')
+        )
+    `);
+    linked = retroResult.rowCount || 0;
+    if (linked > 0) {
+      logger.info(`[WISPHUB] Retrovinculadas ${linked} conversaciones con nombre de cliente WispHub`);
+    }
+  } catch (err) {
+    logger.warn('[WISPHUB] Error en retrovinculación de conversaciones', { error: err.message });
+  }
+
+  logger.info(`[WISPHUB] Sync completo: ${clientes.length} total, ${created} nuevos, ${updated} actualizados, ${errors} errores, ${linked} conversaciones retrovinculadas`);
+  return { total: clientes.length, created, updated, errors, linked };
 };
 
 module.exports = {

@@ -205,6 +205,8 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
   const montoMensual        = clientInfo?.monto_mensual ?? null;
   const periodos            = clientInfo?.periodos ?? [];
   const serviceStatus       = clientInfo?.service_status ?? 'activo'; // 'activo' | 'cortado'
+  const recentPayment       = clientInfo?.recentPayment ?? null;
+  const wasResolved         = clientInfo?.wasResolved ?? false;
 
   // Construir desglose de deuda legible
   let deudaTexto = 'sin datos en este momento';
@@ -225,12 +227,34 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
     ? '⛔ CORTADO / SUSPENDIDO (debe pagar para reactivar)'
     : '✅ Activo';
 
+  // Contexto de pago reciente (si existe)
+  let recentPaymentContext = '';
+  if (recentPayment) {
+    const payStatusMap = {
+      validated: 'VALIDADO ✅',
+      success: 'EXITOSO ✅',
+      registered_no_debt: 'REGISTRADO (sin facturas pendientes) ✅',
+      duplicate: 'DUPLICADO ⚠️',
+      pending: 'PENDIENTE DE REVISIÓN ⏳',
+      processing: 'EN PROCESO ⏳',
+      manual_review: 'EN REVISIÓN MANUAL 👨‍💼',
+      rejected: 'RECHAZADO ❌',
+      amount_mismatch: 'MONTO NO COINCIDE ⚠️',
+    };
+    const payLabel = payStatusMap[recentPayment.status] || recentPayment.status.toUpperCase();
+    recentPaymentContext = `\nÚLTIMO PAGO EN ESTA CONVERSACIÓN: ${payLabel} — Monto: S/ ${recentPayment.amount || 'N/A'} — Op: ${recentPayment.operation_code || 'N/A'}`;
+  }
+
+  const resolvedContext = wasResolved
+    ? '\n⚠️ CONTEXTO: Esta conversación estaba RESUELTA y el cliente escribió de nuevo. Salúdalo brevemente y pregunta en qué puedes ayudarle ahora. Usa el historial para recordar el problema anterior.'
+    : '';
+
   const clientContext = clientName
     ? `CLIENTE IDENTIFICADO (datos de WispHub):
 - Nombre: ${clientName}
 - Plan: ${clientPlan || 'no registrado'}
 - Estado del servicio: ${serviceStatusLabel}
-- Deuda: ${deudaTexto}`
+- Deuda: ${deudaTexto}${recentPaymentContext}`
     : 'CLIENTE: no identificado en el sistema (puede ser número no registrado o nuevo)';
 
   const { getPaymentBlock } = require('../config/payment-info');
@@ -238,7 +262,7 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
   const systemPrompt = `Eres el asistente oficial de atención al cliente de Fiber Perú (ISP de internet por fibra óptica).
 Tu único propósito es ayudar a clientes con temas de: internet por fibra óptica, routers, WiFi, pagos, deudas, vouchers, planes, instalación y soporte técnico.
 
-${clientContext}
+${clientContext}${resolvedContext}
 
 MÉTODOS DE PAGO FIBER PERU:
 ${getPaymentBlock()}
@@ -296,10 +320,14 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
    → Si no se soluciona: "Te conecto con soporte técnico: *932258382* ⏱️"
 
 4. CLIENTE DICE QUE YA PAGÓ (escribe texto, NO envía imagen):
-   → "Para registrar tu pago, envíame la *foto o captura* de tu comprobante 📸
-      (screenshot de Yape, Plin, BCP, Interbank, etc.)"
-   → NUNCA digas "hemos recibido tu comprobante" si no llegó una imagen real.
-   → NUNCA confirmes un pago solo porque el cliente escribió que pagó.
+   → PRIMERO verifica si arriba dice "ÚLTIMO PAGO EN ESTA CONVERSACIÓN":
+     - Si hay un pago REGISTRADO/VALIDADO/EXITOSO reciente → el cliente ya pagó. NO pidas comprobante.
+       Responde: "Tu pago ya fue recibido y registrado. ✅ ¿En qué más puedo ayudarte?"
+     - Si NO hay pago previo registrado → pide la foto:
+       "Para registrar tu pago, envíame la *foto o captura* de tu comprobante 📸
+        (screenshot de Yape, Plin, BCP, Interbank, etc.)"
+   → NUNCA digas "hemos recibido tu comprobante" si no llegó una imagen real Y no hay pago previo.
+   → NUNCA confirmes un pago solo porque el cliente escribió que pagó (sin imagen Y sin pago previo).
 
 5. PIDE HABLAR CON UN HUMANO:
    → "Entendido, te conecto con un asesor ahora mismo. Un momento. 👨‍💼"
