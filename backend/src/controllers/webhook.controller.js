@@ -52,11 +52,15 @@ const receive = async (req, res) => {
     await whatsapp.markAsRead(messageId).catch(() => {});
 
     // Upsert conversación
+    // Si ya tiene client_id (WispHub vinculado), conservar su display_name de WispHub
     const convResult = await query(
       `INSERT INTO conversations (phone, display_name, last_message, last_message_at, unread_count)
        VALUES ($1, $2, $3, NOW(), 1)
        ON CONFLICT (phone) DO UPDATE SET
-         display_name     = COALESCE(NULLIF(EXCLUDED.display_name, EXCLUDED.phone), conversations.display_name),
+         display_name     = CASE
+           WHEN conversations.client_id IS NOT NULL THEN conversations.display_name
+           ELSE COALESCE(NULLIF(EXCLUDED.display_name, EXCLUDED.phone), conversations.display_name)
+         END,
          last_message     = EXCLUDED.last_message,
          last_message_at  = NOW(),
          unread_count     = conversations.unread_count + 1,
@@ -91,7 +95,7 @@ const receive = async (req, res) => {
              client_id    = $1,
              display_name = $2,
              bot_intent   = 'identity_ok'
-           WHERE id = $3 AND client_id IS NULL`,
+           WHERE id = $3`,
           [found.id, found.name, conversation.id]
         );
         conversation = {

@@ -6,6 +6,7 @@ const {
   ejecutarCorteAutomatico,
   sincronizarClientes,
 } = require('../services/scheduler.service');
+const { obtenerFormasPago } = require('../services/wisphub.service');
 const { query }        = require('../config/database');
 const { success, error } = require('../utils/response');
 const logger           = require('../utils/logger');
@@ -125,6 +126,17 @@ router.get('/status', async (req, res) => {
       },
     ],
   });
+});
+
+// GET /api/scheduler/wisphub/formas-pago - Ver formas de pago disponibles en WispHub
+router.get('/wisphub/formas-pago', async (req, res) => {
+  try {
+    const formas = await obtenerFormasPago();
+    return success(res, { formas, count: formas.length });
+  } catch (err) {
+    logger.error('Error obteniendo formas de pago', { error: err.message });
+    return error(res, 'Error al consultar WispHub');
+  }
 });
 
 module.exports = router;

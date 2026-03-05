@@ -387,18 +387,77 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 // REGISTRAR PAGO
 // ─────────────────────────────────────────────────────────────
 
-// Mapeo de métodos de pago → ID forma_pago en WispHub.
-// Los IDs dependen de la configuración de tu cuenta WispHub.
-// Configura con variables de entorno WISPHUB_FORMA_PAGO_* si los IDs difieren.
-const FORMA_PAGO_IDS = {
-  efectivo:   parseInt(process.env.WISPHUB_FORMA_PAGO_EFECTIVO   || '1'),
-  yape:       parseInt(process.env.WISPHUB_FORMA_PAGO_YAPE       || '1'),
-  plin:       parseInt(process.env.WISPHUB_FORMA_PAGO_PLIN       || '1'),
-  bcp:        parseInt(process.env.WISPHUB_FORMA_PAGO_BCP        || '1'),
-  interbank:  parseInt(process.env.WISPHUB_FORMA_PAGO_INTERBANK  || '1'),
-  bbva:       parseInt(process.env.WISPHUB_FORMA_PAGO_BBVA       || '1'),
-  scotiabank: parseInt(process.env.WISPHUB_FORMA_PAGO_SCOTIABANK || '1'),
-  transfer:   parseInt(process.env.WISPHUB_FORMA_PAGO_TRANSFER   || '1'),
+// ─────────────────────────────────────────────────────────────
+// FORMA_PAGO: auto-descubrimiento + caché en memoria
+// ─────────────────────────────────────────────────────────────
+
+// Cache de formas de pago disponibles en WispHub (id → nombre)
+let _formasPagoCache = null;
+
+// Palabras clave para detectar el ID correcto por nombre
+const _KEYWORDS = {
+  yape:       ['yape'],
+  plin:       ['plin'],
+  bcp:        ['bcp', 'banco de credito'],
+  interbank:  ['interbank', 'ibk'],
+  bbva:       ['bbva'],
+  scotiabank: ['scotiabank', 'scotia'],
+  efectivo:   ['efectivo', 'cash'],
+  transfer:   ['transferencia', 'transfer', 'deposito', 'depósito'],
+};
+
+const _obtenerFormasPago = async () => {
+  if (_formasPagoCache) return _formasPagoCache;
+
+  // Intentar varios endpoints posibles en WispHub
+  const endpoints = ['/formas-pago/', '/forma-pago/', '/tipos-pago/', '/metodos-pago/', '/formas_pago/'];
+  for (const ep of endpoints) {
+    try {
+      const { data } = await http.get(ep, { params: { limit: 100 } });
+      const items = data.results || data || [];
+      if (!Array.isArray(items) || items.length === 0) continue;
+      logger.info(`WispHub formas de pago encontradas en ${ep}:`, items.map(i => ({ id: i.id, nombre: i.nombre || i.name || i.descripcion })));
+      _formasPagoCache = items;
+      return items;
+    } catch { /* probar siguiente endpoint */ }
+  }
+  logger.warn('WispHub: no se pudo obtener lista de formas de pago - usando env vars o fallback');
+  return [];
+};
+
+const _resolverFormaPago = async (metodo) => {
+  // 1. Env vars tienen prioridad absoluta
+  const envMap = {
+    efectivo:   process.env.WISPHUB_FORMA_PAGO_EFECTIVO,
+    yape:       process.env.WISPHUB_FORMA_PAGO_YAPE,
+    plin:       process.env.WISPHUB_FORMA_PAGO_PLIN,
+    bcp:        process.env.WISPHUB_FORMA_PAGO_BCP,
+    interbank:  process.env.WISPHUB_FORMA_PAGO_INTERBANK,
+    bbva:       process.env.WISPHUB_FORMA_PAGO_BBVA,
+    scotiabank: process.env.WISPHUB_FORMA_PAGO_SCOTIABANK,
+    transfer:   process.env.WISPHUB_FORMA_PAGO_TRANSFER,
+  };
+  if (envMap[metodo]) return parseInt(envMap[metodo]);
+
+  // 2. Auto-descubrimiento por nombre
+  const formas = await _obtenerFormasPago();
+  if (formas.length > 0) {
+    const keywords = _KEYWORDS[metodo] || [metodo];
+    for (const forma of formas) {
+      const nombre = (forma.nombre || forma.name || forma.descripcion || '').toLowerCase();
+      if (keywords.some(kw => nombre.includes(kw))) {
+        logger.info(`WispHub: forma_pago detectada automáticamente`, { metodo, formaPagoId: forma.id, nombre });
+        return forma.id;
+      }
+    }
+    // No encontró coincidencia → usar el primer ID disponible como fallback
+    logger.warn(`WispHub: no se encontró forma_pago para "${metodo}", usando primer ID disponible: ${formas[0].id} (${formas[0].nombre || formas[0].name})`);
+    return formas[0].id;
+  }
+
+  // 3. Último fallback (probablemente fallará, pero se loguea claro)
+  logger.error(`WispHub: FORMA_PAGO desconocida para "${metodo}". Configura WISPHUB_FORMA_PAGO_${metodo.toUpperCase()} en .env`);
+  return null;
 };
 
 // Endpoint confirmado en proyecto fiber-peru con Culqi:
@@ -410,9 +469,7 @@ const registrarPago = async (clienteId, paymentData) => {
   // Usar fecha real del pago si está disponible, si no, fecha/hora actual
   let fechaPago;
   if (paymentData.paymentDate) {
-    // paymentDate viene como DATE de PostgreSQL ('2026-03-04' o Date object)
     const d = new Date(paymentData.paymentDate);
-    // Sumar 1 día por desfase UTC → asegura que la fecha local sea correcta
     d.setMinutes(d.getMinutes() + d.getTimezoneOffset());
     fechaPago = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} 00:00`;
   } else {
@@ -421,12 +478,16 @@ const registrarPago = async (clienteId, paymentData) => {
   }
 
   const metodo = (paymentData.method || '').toLowerCase();
-  const formaPago = FORMA_PAGO_IDS[metodo] ?? FORMA_PAGO_IDS.efectivo;
+  const formaPago = await _resolverFormaPago(metodo);
+
+  if (!formaPago) {
+    throw new Error(`No se encontró forma_pago válida para método "${metodo}". Configura WISPHUB_FORMA_PAGO_${metodo.toUpperCase()} en backend/.env`);
+  }
 
   const body = {
     monto: paymentData.amount,
     forma_pago: formaPago,
-    accion: 1,  // 1 = Pago completo
+    accion: 1,
     fecha_pago: fechaPago,
     descripcion: `Pago vía WhatsApp - ${paymentData.method?.toUpperCase() || 'Bot FiberPeru'}`,
     referencia: paymentData.operationCode || '',
@@ -605,6 +666,8 @@ const sincronizarContactos = async (db) => {
   // Esto asegura que chats históricos (creados antes del sync) también muestren nombre real
   let linked = 0;
   try {
+    // Actualizar display_name y client_id para TODAS las conversaciones con match de teléfono en WispHub
+    // (no solo las sin client_id) para que siempre se vea el nombre real de WispHub
     const retroResult = await db.query(`
       UPDATE conversations conv
       SET
@@ -612,8 +675,7 @@ const sincronizarContactos = async (db) => {
         display_name = cl.name,
         bot_intent   = 'identity_ok'
       FROM clients cl
-      WHERE conv.client_id IS NULL
-        AND cl.wisphub_id IS NOT NULL
+      WHERE cl.wisphub_id IS NOT NULL
         AND cl.phone != ''
         AND cl.name != 'N/A'
         AND (
@@ -647,4 +709,5 @@ module.exports = {
   cortarServicio,
   obtenerTelefonoCliente,
   sincronizarContactos,
+  obtenerFormasPago: _obtenerFormasPago,
 };
