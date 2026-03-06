@@ -123,6 +123,23 @@ const sendMediaMessage = async (phone, mediaId, mediaType, caption = '') => {
   }
 };
 
+// Delete a business-sent message for everyone (Meta Cloud API)
+const deleteForEveryone = async (wamid) => {
+  try {
+    await axios.delete(`${WA_BASE()}/messages/${wamid}`, {
+      headers: WA_HEADERS(),
+      params: { messaging_product: 'whatsapp' },
+    });
+    logger.info('WhatsApp message deleted for everyone', { wamid });
+  } catch (err) {
+    logger.warn('Failed to delete WhatsApp message for everyone', {
+      wamid,
+      error: err.response?.data || err.message,
+    });
+    // Non-fatal — DB soft-delete still applies
+  }
+};
+
 const markAsRead = async (messageId) => {
   try {
     await axios.post(`${WA_BASE()}/messages`, {
@@ -169,5 +186,6 @@ module.exports = {
   uploadMedia,
   sendMediaMessage,
   markAsRead,
+  deleteForEveryone,
   parseWebhookPayload,
 };

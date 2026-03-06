@@ -18,7 +18,22 @@ const listPayments = async (req, res) => {
     if (status) { params.push(status); where += ` AND p.status = $${params.length}`; }
     if (method) { params.push(method); where += ` AND p.payment_method = $${params.length}`; }
 
-    const countResult = await query(`SELECT COUNT(*) FROM payments p ${where}`, params);
+    const search = req.query.search || null;
+    if (search) {
+      params.push(`%${search}%`);
+      const idx = params.length;
+      where += ` AND (c.display_name ILIKE $${idx} OR p.phone ILIKE $${idx} OR p.operation_code ILIKE $${idx} OR p.payer_name ILIKE $${idx})`;
+    }
+
+    const wisphubFilter = req.query.wisphub_filter || null;
+    if (wisphubFilter === 'unregistered') {
+      where += ` AND p.status = 'validated' AND (p.registered_wisphub = false OR p.registered_wisphub IS NULL)`;
+    }
+
+    const countResult = await query(
+      `SELECT COUNT(*) FROM payments p LEFT JOIN conversations c ON c.id = p.conversation_id ${where}`,
+      params
+    );
     const total = parseInt(countResult.rows[0].count);
 
     params.push(limit, offset);
@@ -45,11 +60,12 @@ const listPayments = async (req, res) => {
 // GET /api/payments/stats - Dashboard stats
 const getStats = async (req, res) => {
   try {
-    const [total, byStatus, byMethod, today] = await Promise.all([
+    const [total, byStatus, byMethod, today, unregistered] = await Promise.all([
       query('SELECT COUNT(*) as total, SUM(amount) as total_amount FROM payments WHERE status = $1', ['validated']),
       query(`SELECT status, COUNT(*) as count FROM payments GROUP BY status`),
       query(`SELECT payment_method, COUNT(*) as count, SUM(amount) as total FROM payments WHERE status = 'validated' GROUP BY payment_method ORDER BY count DESC`),
       query(`SELECT COUNT(*) as count FROM payments WHERE DATE(created_at) = CURRENT_DATE`),
+      query(`SELECT COUNT(*) as count FROM payments WHERE status = 'validated' AND (registered_wisphub = false OR registered_wisphub IS NULL)`),
     ]);
 
     const activeChats = await query(
@@ -61,6 +77,7 @@ const getStats = async (req, res) => {
         total_validated: parseInt(total.rows[0]?.total || 0),
         total_amount: parseFloat(total.rows[0]?.total_amount || 0),
         today: parseInt(today.rows[0]?.count || 0),
+        unregistered_wisphub: parseInt(unregistered.rows[0]?.count || 0),
         by_status: byStatus.rows,
         by_method: byMethod.rows,
       },

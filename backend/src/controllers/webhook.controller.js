@@ -675,7 +675,7 @@ const buildPaymentResponse = (result) => {
 
   switch (result.status) {
     case 'success':
-      return `✅ *Pago registrado exitosamente*\n\n💰 Monto: S/ ${aiData.amount}\n📅 Fecha: ${aiData.paymentDate || 'hoy'}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nTu servicio ha sido actualizado. ¡Gracias por pagar con Fiber Perú! 🎉`;
+      return `✅ *Pago registrado exitosamente*\n\n💰 Monto: S/ ${aiData.amount}\n📅 Fecha: ${aiData.paymentDate || 'hoy'}\n🔢 Operación: ${aiData.operationCode || 'N/A'}${debt.factura_id ? `\n🧾 Factura: #${debt.factura_id}` : ''}\n\nTu servicio ha sido actualizado. ¡Gracias por pagar con Fiber Perú! 🎉`;
 
     case 'registered_no_debt':
       return `✅ *Pago registrado en el sistema*\n\n💰 Monto: S/ ${aiData.amount}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nNo encontramos facturas pendientes en tu cuenta en este momento. Para más información comunícate con soporte: *932258382* 😊`;

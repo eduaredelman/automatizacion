@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { useChatStore } from '@/store/chat.store';
@@ -8,7 +8,7 @@ import { es } from 'date-fns/locale';
 import VoucherModal from '@/components/VoucherModal';
 import {
   CreditCard, RefreshCw, Trash2, CheckCircle2,
-  Clock, AlertTriangle, DollarSign, MessageSquare,
+  Clock, AlertTriangle, DollarSign, MessageSquare, Search, WifiOff,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -34,16 +34,18 @@ interface Stats {
   total_validated: number;
   total_amount: number;
   today: number;
+  unregistered_wisphub: number;
   by_status: { status: string; count: string }[];
 }
 
 const STATUS_OPTIONS = [
-  { value: '', label: 'Todos' },
-  { value: 'pending', label: 'Pendientes' },
-  { value: 'validated', label: 'Validados' },
-  { value: 'rejected', label: 'Rechazados' },
-  { value: 'manual_review', label: 'En revisión' },
-  { value: 'duplicate', label: 'Duplicados' },
+  { value: '', label: 'Todos', wisphub: '' },
+  { value: 'pending', label: 'Pendientes', wisphub: '' },
+  { value: 'validated', label: 'Validados', wisphub: '' },
+  { value: 'rejected', label: 'Rechazados', wisphub: '' },
+  { value: 'manual_review', label: 'En revisión', wisphub: '' },
+  { value: 'duplicate', label: 'Duplicados', wisphub: '' },
+  { value: '', label: '⚠ No registrado en WispHub', wisphub: 'unregistered' },
 ];
 
 const STATUS_BADGE: Record<string, string> = {
@@ -73,15 +75,31 @@ export default function PaymentsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [wisphubFilter, setWisphubFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Debounce de búsqueda
+  const handleSearchChange = (val: string) => {
+    setSearchInput(val);
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(() => { setSearch(val); setPage(1); }, 400);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [paymentsRes, statsRes] = await Promise.all([
-        api.getPayments({ page, limit: 20, status: statusFilter || undefined }),
+        api.getPayments({
+          page, limit: 20,
+          status: statusFilter || undefined,
+          search: search || undefined,
+          wisphub_filter: wisphubFilter || undefined,
+        }),
         api.getPaymentStats(),
       ]);
       setPayments(paymentsRes.data.data);
@@ -92,7 +110,7 @@ export default function PaymentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter]);
+  }, [page, statusFilter, wisphubFilter, search]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -136,8 +154,8 @@ export default function PaymentsPage() {
   return (
     <div className="h-full overflow-y-auto">
       {/* Header */}
-      <div className="p-6 border-b border-slate-800/60 bg-[#0d1424] sticky top-0 z-10">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="p-6 border-b border-slate-800/60 bg-[#0d1424] sticky top-0 z-10 space-y-3">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-white flex items-center gap-2">
               <CreditCard className="w-5 h-5 text-blue-400" />
@@ -145,25 +163,53 @@ export default function PaymentsPage() {
             </h1>
             <p className="text-sm text-slate-400 mt-0.5">{total} comprobantes registrados</p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {STATUS_OPTIONS.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => { setStatusFilter(value); setPage(1); }}
-                className={clsx(
-                  'px-3 py-1.5 rounded-xl text-xs font-medium transition-all',
-                  statusFilter === value
-                    ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40'
-                    : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
-                )}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            {/* Buscador */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+              <input
+                type="text"
+                value={searchInput}
+                onChange={e => handleSearchChange(e.target.value)}
+                placeholder="Buscar cliente, teléfono, código..."
+                className="pl-8 pr-3 py-1.5 bg-slate-800/60 border border-slate-700/50 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 w-56"
+              />
+            </div>
             <button onClick={load} className="btn-ghost p-2 text-xs">
               <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
             </button>
           </div>
+        </div>
+        {/* Filtros */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {STATUS_OPTIONS.map(({ value, label, wisphub }, i) => {
+            const isActive = statusFilter === value && wisphubFilter === wisphub;
+            const isUnregistered = wisphub === 'unregistered';
+            return (
+              <button
+                key={i}
+                onClick={() => { setStatusFilter(value); setWisphubFilter(wisphub); setPage(1); }}
+                className={clsx(
+                  'px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1',
+                  isActive && isUnregistered
+                    ? 'bg-yellow-600/30 text-yellow-300 border border-yellow-500/40'
+                    : isActive
+                    ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40'
+                    : isUnregistered
+                    ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
+                    : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
+                )}
+              >
+                {isUnregistered && <WifiOff className="w-3 h-3" />}
+                {label}
+                {isUnregistered && stats?.unregistered_wisphub ? (
+                  <span className="ml-1 bg-yellow-500/20 text-yellow-400 px-1.5 rounded-full text-[10px]">
+                    {stats.unregistered_wisphub}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -208,6 +254,26 @@ export default function PaymentsPage() {
             <p className="text-xs text-slate-500 mt-1">
               {getStatCount('duplicate')} duplicados · {getStatCount('rejected')} rechazados
             </p>
+          </div>
+
+          <div
+            className={clsx(
+              'glass rounded-2xl p-4 border cursor-pointer transition-all',
+              (stats?.unregistered_wisphub ?? 0) > 0
+                ? 'border-yellow-500/40 hover:border-yellow-500/60'
+                : 'border-slate-700/30'
+            )}
+            onClick={() => { setStatusFilter(''); setWisphubFilter('unregistered'); setPage(1); }}
+            title="Ver pagos no registrados en WispHub"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <WifiOff className={clsx('w-4 h-4', (stats?.unregistered_wisphub ?? 0) > 0 ? 'text-yellow-400' : 'text-slate-600')} />
+              <span className="text-xs text-slate-400">Sin registrar WispHub</span>
+            </div>
+            <p className={clsx('text-2xl font-bold', (stats?.unregistered_wisphub ?? 0) > 0 ? 'text-yellow-400' : 'text-slate-600')}>
+              {stats?.unregistered_wisphub ?? '—'}
+            </p>
+            <p className="text-xs text-slate-500 mt-1">validados · requieren revisión</p>
           </div>
         </div>
 

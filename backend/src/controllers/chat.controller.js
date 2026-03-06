@@ -499,17 +499,33 @@ const editMessage = async (req, res) => {
     if (!body?.trim()) return error(res, 'Contenido requerido', 400);
 
     const check = await query(
-      'SELECT * FROM messages WHERE id = $1 AND conversation_id = $2',
+      `SELECT m.*, c.phone FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.id = $1 AND m.conversation_id = $2`,
       [msgId, id]
     );
     if (!check.rows.length) return error(res, 'Mensaje no encontrado', 404);
-    if (check.rows[0].sender_type === 'client') return error(res, 'No se puede editar mensajes del cliente', 403);
-    if (check.rows[0].message_type !== 'text') return error(res, 'Solo se pueden editar mensajes de texto', 400);
+    const msg = check.rows[0];
+    if (msg.sender_type === 'client') return error(res, 'No se puede editar mensajes del cliente', 403);
+    if (msg.message_type !== 'text') return error(res, 'Solo se pueden editar mensajes de texto', 400);
+
+    // Delete old WhatsApp message + send new one so client sees the change
+    let newWamid = msg.whatsapp_id;
+    if (msg.whatsapp_id) {
+      await whatsapp.deleteForEveryone(msg.whatsapp_id);
+      try {
+        const sent = await whatsapp.sendTextMessage(msg.phone, body.trim());
+        newWamid = sent?.messages?.[0]?.id || msg.whatsapp_id;
+      } catch (waErr) {
+        logger.warn('editMessage: WhatsApp resend failed', { msgId, error: waErr.message });
+      }
+    }
 
     const result = await query(
-      `UPDATE messages SET body = $1, is_edited = true, edited_at = NOW() WHERE id = $2
+      `UPDATE messages SET body = $1, is_edited = true, edited_at = NOW(), whatsapp_id = $2
+       WHERE id = $3
        RETURNING id, conversation_id, body, is_edited, edited_at`,
-      [body.trim(), msgId]
+      [body.trim(), newWamid, msgId]
     );
 
     const updated = result.rows[0];
@@ -524,7 +540,7 @@ const editMessage = async (req, res) => {
 };
 
 // DELETE /api/chats/:id/messages/:msgId - Delete a bot/agent message
-// ?scope=all → soft delete (show placeholder); default → hard delete (remove from CRM)
+// ?scope=all → delete for everyone (WhatsApp + soft-delete in DB); default → hard delete (remove from CRM)
 const deleteMessage = async (req, res) => {
   try {
     const { id, msgId } = req.params;
@@ -538,7 +554,11 @@ const deleteMessage = async (req, res) => {
     if (check.rows[0].sender_type === 'client') return error(res, 'No se puede eliminar mensajes del cliente', 403);
 
     if (scope === 'all') {
-      // Soft delete — keeps row, clears content, shows placeholder
+      // Call WhatsApp API to delete for everyone (non-fatal)
+      if (check.rows[0].whatsapp_id) {
+        await whatsapp.deleteForEveryone(check.rows[0].whatsapp_id);
+      }
+      // Soft delete — keeps row, shows placeholder in CRM
       await query(
         `UPDATE messages SET is_deleted = true, deleted_at = NOW(), body = NULL, media_url = NULL
          WHERE id = $1`,

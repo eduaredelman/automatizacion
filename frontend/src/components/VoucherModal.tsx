@@ -71,7 +71,7 @@ export default function VoucherModal({ payment, onClose, onValidate, onReject }:
   const imageUrl = payment.voucher_url ? `${API_URL}${payment.voucher_url}` : null;
   const confidence = payment.ocr_confidence as keyof typeof CONFIDENCE_COLORS;
   const statusCfg = STATUS_CONFIG[payment.status] || { label: payment.status, color: 'text-slate-400' };
-  const canAction = ['pending', 'processing', 'manual_review'].includes(payment.status);
+  const canAction = ['pending', 'processing', 'manual_review', 'rejected'].includes(payment.status);
 
   const handleValidate = async () => {
     setLoading(true);
