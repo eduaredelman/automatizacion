@@ -486,7 +486,9 @@ const registrarPago = async (clienteId, paymentData) => {
     throw new Error(`No se encontró forma_pago válida para método "${metodo}". Configura WISPHUB_FORMA_PAGO_${metodo.toUpperCase()} en backend/.env`);
   }
 
-  // Buscar la factura pendiente del cliente para obtener su id_factura
+  // Buscar la factura pendiente del cliente para obtener su id_factura.
+  // CRÍTICO: WispHub ignora el filtro id_servicio y puede devolver facturas de otro cliente.
+  // Validamos que la factura pertenezca realmente a clienteId.
   const estadosPendientes = new Set([
     'pendiente', 'Pendiente', 'pendiente de pago', 'Pendiente de Pago',
     'no pagada', 'No Pagada', 'vencida', 'Vencida', 'por pagar', 'Por Pagar',
@@ -495,13 +497,28 @@ const registrarPago = async (clienteId, paymentData) => {
   let facturaId = null;
   try {
     const { data: facturasData } = await http.get('/facturas/', {
-      params: { id_servicio: clienteId, limit: 50 }
+      params: { id_servicio: clienteId, limit: 100 }
     });
     const facturas = facturasData.results || facturasData || [];
-    const pendiente = facturas.find(f => estadosPendientes.has(f.estado || f.status || ''));
+
+    const pendiente = facturas.find(f => {
+      // 1. Debe estar en estado pendiente
+      if (!estadosPendientes.has(f.estado || f.status || '')) return false;
+      // 2. Debe pertenecer al cliente correcto (igual que consultarDeuda)
+      const facServiceId = String(f.cliente?.id_servicio || f.id_servicio || '');
+      if (facServiceId && facServiceId !== String(clienteId)) return false;
+      return true;
+    });
+
     if (pendiente) {
       facturaId = pendiente.id_factura || pendiente.id;
       logger.info('WispHub: factura pendiente encontrada', { clienteId, facturaId, estado: pendiente.estado });
+    } else {
+      logger.warn('WispHub: no se encontró factura pendiente válida para este cliente', {
+        clienteId,
+        totalFacturas: facturas.length,
+        estados: [...new Set(facturas.map(f => f.estado))],
+      });
     }
   } catch (err) {
     logger.warn('WispHub: error buscando factura pendiente', { clienteId, error: err.message });
