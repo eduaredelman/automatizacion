@@ -58,8 +58,21 @@ export default function ChatsPage() {
   useEffect(() => {
     // Primero intentar por conversation_id directo (más preciso)
     if (pendingOpenConvId) {
-      setActiveConversation(pendingOpenConvId);
       setPendingOpenConvId(null);
+      // Si ya está en la lista, abrirla directamente
+      const inList = useChatStore.getState().conversations.find(c => c.id === pendingOpenConvId);
+      if (inList) {
+        setActiveConversation(pendingOpenConvId);
+      } else {
+        // No está en la lista (puede estar archivada o filtrada) — cargarla del API
+        api.getChat(pendingOpenConvId).then(({ data }) => {
+          const conv = data?.data?.conversation;
+          if (conv?.id) {
+            useChatStore.getState().prependConversation(conv);
+            setActiveConversation(conv.id);
+          }
+        }).catch(() => setActiveConversation(pendingOpenConvId));
+      }
       return;
     }
     // Fallback por phone
