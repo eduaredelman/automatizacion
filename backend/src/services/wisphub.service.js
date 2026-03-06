@@ -512,7 +512,7 @@ const registrarPago = async (clienteId, paymentData) => {
   }
 
   const body = {
-    monto: paymentData.amount,
+    total_cobrado: paymentData.amount,
     forma_pago: formaPago,
     accion: 1,
     fecha_pago: fechaPago,
