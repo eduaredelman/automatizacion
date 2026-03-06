@@ -395,22 +395,24 @@ const consultarDeuda = async (clienteId, opts = {}) => {
 let _formasPagoCache = null;
 
 // Palabras clave para detectar el ID correcto por nombre
+// Prioriza "FIBER FIX" sobre nombres personales cuando existan ambos
 const _KEYWORDS = {
-  yape:       ['yape'],
-  plin:       ['plin'],
+  yape:       ['yape fiber', 'yape fix', 'yape s.a', 'yape'],
+  plin:       ['plin fiber', 'plin fix', 'plin s.a', 'plin'],
   bcp:        ['bcp', 'banco de credito'],
   interbank:  ['interbank', 'ibk'],
   bbva:       ['bbva'],
   scotiabank: ['scotiabank', 'scotia'],
   efectivo:   ['efectivo', 'cash'],
-  transfer:   ['transferencia', 'transfer', 'deposito', 'depósito'],
+  transfer:   ['transferencia bancaria fiber', 'transferencia bancaria fix', 'transferencia bancaria s.a', 'transferencia', 'transfer'],
+  deposito:   ['deposito fiber', 'deposito fix', 'deposito s.a', 'deposito', 'depósito'],
 };
 
 const _obtenerFormasPago = async () => {
   if (_formasPagoCache) return _formasPagoCache;
 
   // Intentar varios endpoints posibles en WispHub
-  const endpoints = ['/formas-pago/', '/forma-pago/', '/tipos-pago/', '/metodos-pago/', '/formas_pago/'];
+  const endpoints = ['/formas-de-pago/', '/formas-pago/', '/forma-pago/', '/tipos-pago/', '/metodos-pago/', '/formas_pago/'];
   for (const ep of endpoints) {
     try {
       const { data } = await http.get(ep, { params: { limit: 100 } });
