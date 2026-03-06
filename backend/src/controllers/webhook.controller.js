@@ -531,7 +531,7 @@ const processPendingPayment = async (conversation, phone, paymentId) => {
   await whatsapp.sendTextMessage(phone, responseText);
   await saveOutboundMessage(conversation.id, responseText, 'bot');
 
-  if (['manual_review', 'error', 'client_not_found'].includes(result.status)) {
+  if (['manual_review', 'error', 'client_not_found', 'old_debt_only'].includes(result.status)) {
     await escalateToHuman(conversation, `Pago requiere revisión: ${result.status}`);
   }
   await logEvent(conversation.id, paymentId, 'payment_processed', result.status);
@@ -774,6 +774,9 @@ const buildPaymentResponse = (result) => {
         : `El monto no corresponde al de tu cuota actual.`;
       return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide con tu cuota.\n\n${hint}\n\nPor favor envía el comprobante con el monto correcto o comunícate con soporte: *932258382*`;
     }
+
+    case 'old_debt_only':
+      return `⚠️ Detectamos pagos pendientes de *meses anteriores* en tu cuenta.\n\nPara regularizar tu servicio comunícate con un asesor: *932258382*`;
 
     case 'manual_review':
       return `Hemos recibido tu comprobante. Nuestro equipo lo validará en breve y te confirmaremos. ✅\n\n¿Consultas? *932258382*`;

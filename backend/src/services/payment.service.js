@@ -134,10 +134,25 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
     const debtInfo = await wisphub.consultarDeuda(clientId);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
-    logger.info('Debt info', { clientId, tiene_deuda: debtInfo.tiene_deuda, monto: debtInfo.monto_deuda });
+    logger.info('Debt info', {
+      clientId,
+      tiene_deuda: debtInfo.tiene_deuda,
+      solo_deuda_antigua: debtInfo.solo_deuda_antigua,
+      monto: debtInfo.monto_deuda,
+      factura_id: debtInfo.factura_id,
+    });
+
+    // Si solo tiene facturas de meses anteriores → derivar a asesor, no registrar automáticamente
+    if (debtInfo.solo_deuda_antigua) {
+      await updatePayment({
+        status: 'manual_review',
+        rejection_reason: 'Cliente tiene deuda de meses anteriores sin factura del mes actual',
+      });
+      return { status: 'old_debt_only', paymentId, aiVisionData, debtInfo };
+    }
 
     // Validar que el monto coincida con la cuota del mes actual.
-    // Solo se acepta pagar 1 mes a la vez. Pagos de meses atrasados → asesor.
+    // Solo se acepta pagar 1 mes a la vez.
     if (debtInfo.tiene_deuda) {
       const monthlyAmount = debtInfo.monto_mensual || 0;
 
