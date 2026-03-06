@@ -735,9 +735,25 @@ const buildPaymentResponse = (result) => {
   const aiData = result.aiVisionData || result.ocrResult || {};
   const debt   = result.debtInfo || {};
 
+  // Formatear fecha: paymentDate puede ser "YYYY-MM-DD" o ISO; mostrar dd/mm/yyyy HH:mm
+  const formatFecha = (raw) => {
+    if (!raw) {
+      const now = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    }
+    try {
+      const d = new Date(raw.includes('T') ? raw : raw + 'T12:00:00');
+      const pad = n => String(n).padStart(2, '0');
+      return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+    } catch { return raw; }
+  };
+
   switch (result.status) {
-    case 'success':
-      return `✅ *Pago registrado exitosamente*\n\n💰 Monto: S/ ${aiData.amount}\n📅 Fecha: ${aiData.paymentDate || 'hoy'}\n🔢 Operación: ${aiData.operationCode || 'N/A'}${debt.factura_id ? `\n🧾 Factura: #${debt.factura_id}` : ''}\n\nTu servicio ha sido actualizado. ¡Gracias por pagar con Fiber Perú! 🎉`;
+    case 'success': {
+      const metodo = (aiData.paymentMethod || aiData.method || 'N/A').toUpperCase().replace('_', ' ');
+      return `✅ *Pago recibido correctamente*\n\n🧾 Factura: #${debt.factura_id || 'N/A'}\n💰 Monto: S/ ${aiData.amount}\n💳 Método: ${metodo}\n📅 Fecha: ${formatFecha(aiData.paymentDate)}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\n¡Gracias por su pago! Su servicio ha sido actualizado. 🎉`;
+    }
 
     case 'registered_no_debt':
       return `✅ *Pago registrado en el sistema*\n\n💰 Monto: S/ ${aiData.amount}\n🔢 Operación: ${aiData.operationCode || 'N/A'}\n\nNo encontramos facturas pendientes en tu cuenta en este momento. Para más información comunícate con soporte: *932258382* 😊`;

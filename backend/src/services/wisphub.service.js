@@ -219,14 +219,7 @@ const obtenerClientesConDeuda = async () => {
 // DEUDA
 // ─────────────────────────────────────────────────────────────
 
-// consultarDeuda acepta opts.usuario y opts.nombre para validar que las facturas
-// pertenecen al cliente correcto (WispHub a veces retorna facturas de otro cliente)
-const consultarDeuda = async (clienteId, opts = {}) => {
-  const { usuario: clienteUsuario = null, nombre: clienteNombre = null } = opts;
-
-  // Normalizar texto: quitar acentos, minúsculas, trim
-  const normalize = s => (s || '').toLowerCase().normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '').trim();
+const consultarDeuda = async (clienteId) => {
 
   // Todas las variantes posibles de estado pendiente en WispHub
   const estadosPendientes = new Set([
@@ -289,60 +282,25 @@ const consultarDeuda = async (clienteId, opts = {}) => {
       });
     }
 
-    // ─── VALIDAR que las facturas pertenecen al cliente correcto ─────────────
-    // CRÍTICO: se aplica SIEMPRE (después del fallback también).
-    // WispHub ignora el filtro id_servicio y devuelve facturas de otro cliente.
-    // La pantalla WispHub confirma: cada factura tiene cliente.id_servicio propio.
-    // Ej: factura 5112 → id_servicio=1940 (Eduardo Marin), factura 5088 → id_servicio=1969 (Eduardo Huarancca)
-    if (pendientes.length > 0 && (clienteUsuario || clienteNombre)) {
-      const pendientesValidados = pendientes.filter(f => {
-        // 1. id_servicio del cliente en la factura (campo más confiable y específico)
+    // ─── VALIDAR por id_servicio si WispHub lo incluye en la respuesta ──────
+    // No filtramos por nombre — las facturas pueden tener nombres distintos al cliente
+    // (titular diferente, nombre comercial, etc.). El id_servicio es el identificador correcto.
+    if (pendientes.length > 0) {
+      const conId = pendientes.filter(f => {
         const facServiceId = String(f.cliente?.id_servicio || f.id_servicio || '');
-        if (facServiceId) {
-          const match = facServiceId === String(clienteId);
-          if (!match) return false; // id_servicio diferente → rechazar definitivamente
-          return true;
-        }
-
-        // 2. Coincidencia exacta de usuario WispHub (único por cliente)
-        if (clienteUsuario) {
-          const facUsuario = normalize(f.cliente?.usuario || '');
-          if (facUsuario && facUsuario === normalize(clienteUsuario)) return true;
-        }
-
-        // 3. Coincidencia de nombre (≥2 palabras para evitar falsos positivos entre
-        //    clientes que comparten nombre de pila, ej: dos "Eduardo" distintos)
-        if (clienteNombre) {
-          const facNombre = normalize(f.cliente?.nombre || '');
-          if (facNombre) {
-            const words = normalize(clienteNombre).split(/\s+/).filter(w => w.length > 2);
-            const matchCount = words.filter(w => facNombre.includes(w)).length;
-            if (matchCount >= 2) return true;
-          }
-        }
-
-        return false;
+        return facServiceId !== '' && facServiceId === String(clienteId);
       });
-
-      if (pendientesValidados.length > 0) {
-        logger.info('WispHub facturas validadas por cliente', {
-          clienteId,
-          original: pendientes.length,
-          validadas: pendientesValidados.length,
-        });
-        pendientes = pendientesValidados;
-      } else {
-        // Ninguna pasó la validación → WispHub devolvió facturas de otro cliente
-        logger.warn('WispHub facturas descartadas (pertenecen a otro cliente)', {
-          clienteId, clienteUsuario, clienteNombre,
-          facturasRetornadas: pendientes.slice(0, 3).map(f => ({
-            facturaId: f.id_factura || f.id,
-            clienteServiceId: f.cliente?.id_servicio,
-            clienteNombre: f.cliente?.nombre,
-          })),
-        });
-        pendientes = [];
+      // Solo aplicar el filtro si WispHub devolvió el campo id_servicio en las facturas
+      if (conId.length > 0) {
+        if (conId.length < pendientes.length) {
+          logger.info('WispHub: filtradas facturas por id_servicio', {
+            clienteId, original: pendientes.length, filtradas: conId.length,
+          });
+        }
+        pendientes = conId;
       }
+      // Si WispHub no incluye id_servicio en las facturas, aceptar todas las devueltas
+      // (la query ya usó ?id_servicio=clienteId como filtro)
     }
 
     const montoTotal = pendientes.reduce((s, f) =>
