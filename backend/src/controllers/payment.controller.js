@@ -22,7 +22,7 @@ const listPayments = async (req, res) => {
     if (search) {
       params.push(`%${search}%`);
       const idx = params.length;
-      where += ` AND (c.display_name ILIKE $${idx} OR p.phone ILIKE $${idx} OR p.operation_code ILIKE $${idx} OR p.payer_name ILIKE $${idx})`;
+      where += ` AND (c.display_name ILIKE $${idx} OR c.phone ILIKE $${idx} OR p.operation_code ILIKE $${idx} OR p.payer_name ILIKE $${idx})`;
     }
 
     const wisphubFilter = req.query.wisphub_filter || null;

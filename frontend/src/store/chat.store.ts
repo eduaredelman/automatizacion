@@ -41,6 +41,7 @@ interface ChatState {
   messages: Record<string, Message[]>;
   unreadTotal: number;
   pendingOpenPhone: string | null;
+  pendingOpenConvId: string | null;
   setConversations: (convs: Conversation[]) => void;
   setActiveConversation: (id: string | null) => void;
   addMessage: (msg: Message) => void;
@@ -52,6 +53,7 @@ interface ChatState {
   removeMessage: (conversationId: string, messageId: string) => void;
   updateMessage: (conversationId: string, messageId: string, updates: Partial<Message>) => void;
   setPendingOpenPhone: (phone: string | null) => void;
+  setPendingOpenConvId: (id: string | null) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -60,6 +62,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: {},
   unreadTotal: 0,
   pendingOpenPhone: null,
+  pendingOpenConvId: null,
 
   setConversations: (convs) => {
     set({ conversations: convs });
@@ -143,4 +146,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setPendingOpenPhone: (phone) => set({ pendingOpenPhone: phone }),
+  setPendingOpenConvId: (id) => set({ pendingOpenConvId: id }),
 }));

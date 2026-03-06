@@ -7,7 +7,7 @@ import ChatWindow from '@/components/ChatWindow';
 import { MessageSquare, Plus, X, Send, Loader2 } from 'lucide-react';
 
 export default function ChatsPage() {
-  const { conversations, setConversations, activeConversationId, setActiveConversation, pendingOpenPhone, setPendingOpenPhone } = useChatStore();
+  const { conversations, setConversations, activeConversationId, setActiveConversation, pendingOpenPhone, setPendingOpenPhone, pendingOpenConvId, setPendingOpenConvId } = useChatStore();
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -28,10 +28,13 @@ export default function ChatsPage() {
       });
       setConversations(data.data);
       // Auto-abrir conversación si viene desde pagos
-      const pending = useChatStore.getState().pendingOpenPhone;
-      if (pending) {
+      const { pendingOpenConvId: convId, pendingOpenPhone: phone } = useChatStore.getState();
+      if (convId) {
+        setActiveConversation(convId);
+        useChatStore.getState().setPendingOpenConvId(null);
+      } else if (phone) {
         const conv = data.data.find((c: { phone: string; id: string }) =>
-          c.phone === pending || c.phone === `51${pending}` || `51${c.phone}` === pending
+          c.phone === phone || c.phone === `51${phone}` || `51${c.phone}` === phone
         );
         if (conv) setActiveConversation(conv.id);
         useChatStore.getState().setPendingOpenPhone(null);
@@ -53,6 +56,13 @@ export default function ChatsPage() {
 
   // Abrir conversación pendiente desde página de pagos (funciona incluso si la página ya estaba montada)
   useEffect(() => {
+    // Primero intentar por conversation_id directo (más preciso)
+    if (pendingOpenConvId) {
+      setActiveConversation(pendingOpenConvId);
+      setPendingOpenConvId(null);
+      return;
+    }
+    // Fallback por phone
     if (!pendingOpenPhone || conversations.length === 0) return;
     const conv = conversations.find(c =>
       c.phone === pendingOpenPhone ||
@@ -61,7 +71,7 @@ export default function ChatsPage() {
     );
     if (conv) setActiveConversation(conv.id);
     setPendingOpenPhone(null);
-  }, [pendingOpenPhone, conversations, setActiveConversation, setPendingOpenPhone]);
+  }, [pendingOpenConvId, pendingOpenPhone, conversations, setActiveConversation, setPendingOpenPhone, setPendingOpenConvId]);
 
   const handleArchive = useCallback(async (id: string) => {
     try {

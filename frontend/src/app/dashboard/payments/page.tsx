@@ -69,7 +69,7 @@ const METHOD_ICONS: Record<string, string> = {
 
 export default function PaymentsPage() {
   const router = useRouter();
-  const { setPendingOpenPhone } = useChatStore();
+  const { setPendingOpenPhone, setPendingOpenConvId } = useChatStore();
   const [payments, setPayments] = useState<Payment[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -121,9 +121,13 @@ export default function PaymentsPage() {
     return parseInt(found?.count || '0');
   };
 
-  const handleViewChat = (phone: string, e: React.MouseEvent) => {
+  const handleViewChat = (p: Payment, e: React.MouseEvent) => {
     e.stopPropagation();
-    setPendingOpenPhone(phone);
+    if (p.conversation_id) {
+      setPendingOpenConvId(p.conversation_id);
+    } else if (p.phone) {
+      setPendingOpenPhone(p.phone);
+    }
     router.push('/dashboard/chats');
   };
 
@@ -365,7 +369,7 @@ export default function PaymentsPage() {
                       <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
                           <button
-                            onClick={(e) => handleViewChat(p.phone, e)}
+                            onClick={(e) => handleViewChat(p, e)}
                             title="Ver conversación en chat"
                             className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all"
                           >
