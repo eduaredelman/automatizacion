@@ -769,11 +769,10 @@ const buildPaymentResponse = (result) => {
 
     case 'amount_mismatch': {
       const monthly = debt.monto_mensual;
-      const total   = debt.monto_deuda;
-      const hint = monthly && monthly !== total
-        ? `Tu cuota mensual es *S/ ${monthly}* y tu deuda total es *S/ ${total}*.`
-        : `Tu deuda pendiente es *S/ ${total || 'N/A'}*.`;
-      return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide.\n\n${hint}\n\nUn asesor revisará tu caso: *932258382*`;
+      const hint = monthly
+        ? `El monto de tu cuota mensual es *S/ ${monthly}*.`
+        : `El monto no corresponde al de tu cuota actual.`;
+      return `⚠️ El monto del comprobante (*S/ ${aiData.amount || 'N/A'}*) no coincide con tu cuota.\n\n${hint}\n\nPor favor envía el comprobante con el monto correcto o comunícate con soporte: *932258382*`;
     }
 
     case 'manual_review':

@@ -92,6 +92,10 @@ export const api = {
     getApi().delete(`/payments/${id}`),
   registerWisphub: (id: string) =>
     getApi().post(`/payments/${id}/register-wisphub`),
+
+  // Bot Payments
+  getBotPayments: (params?: Record<string, unknown>) =>
+    getApi().get('/bot-payments', { params }),
 };
 
 export default api;

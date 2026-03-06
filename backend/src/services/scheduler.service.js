@@ -351,6 +351,23 @@ const sincronizarClientes = async () => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// JOB: Limpiar pagos antiguos (> 6 meses)
+// ─────────────────────────────────────────────────────────────
+
+const limpiarPagosAntiguos = async () => {
+  logger.info('[SCHEDULER] Limpiando pagos y eventos con más de 6 meses...');
+  try {
+    const res = await query(
+      `DELETE FROM payments WHERE created_at < NOW() - INTERVAL '6 months'`
+    );
+    const borrados = res.rowCount || 0;
+    if (borrados > 0) logger.info(`[SCHEDULER] Limpieza: ${borrados} pagos eliminados`);
+  } catch (err) {
+    logger.error('[SCHEDULER] Error en limpieza de pagos', { error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
 // INICIALIZAR TODOS LOS CRON JOBS
 // ─────────────────────────────────────────────────────────────
 
@@ -380,10 +397,16 @@ const initScheduler = () => {
     await sincronizarClientes();
   });
 
-  logger.info('[SCHEDULER] ✅ Trabajos programados activos:');
-  logger.info('  📅 Días 1-5 a las 8:00 AM Lima → Avisos de cobro');
-  logger.info('  ✂️  Día 10 a las 9:00 AM Lima  → Corte automático');
-  logger.info(`  🔄 Cada ${SYNC_INTERVAL} min           → Sincronizar contactos`);
+  // ── Cada día a las 3:00 AM Lima: Limpiar pagos con más de 6 meses
+  cron.schedule('0 3 * * *', async () => {
+    await limpiarPagosAntiguos();
+  }, { timezone: 'America/Lima' });
+
+  logger.info('[SCHEDULER] Trabajos programados activos:');
+  logger.info('  Dias 1-5 a las 8:00 AM Lima → Avisos de cobro');
+  logger.info('  Dia 10 a las 9:00 AM Lima  → Corte automatico');
+  logger.info(`  Cada ${SYNC_INTERVAL} min           → Sincronizar contactos`);
+  logger.info('  Cada dia a las 3:00 AM Lima → Limpieza pagos > 6 meses');
 };
 
 module.exports = {
@@ -391,4 +414,5 @@ module.exports = {
   enviarAvisosCobro,
   ejecutarCorteAutomatico,
   sincronizarClientes,
+  limpiarPagosAntiguos,
 };

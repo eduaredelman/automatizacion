@@ -18,8 +18,9 @@ const chatRoutes     = require('./routes/chat.routes');
 const authRoutes     = require('./routes/auth.routes');
 const paymentRoutes  = require('./routes/payment.routes');
 const schedulerRoutes = require('./routes/scheduler.routes');
-const contactRoutes  = require('./routes/contacts.routes');
-const campaignRoutes = require('./routes/campaigns.routes');
+const contactRoutes     = require('./routes/contacts.routes');
+const campaignRoutes    = require('./routes/campaigns.routes');
+const botPaymentRoutes  = require('./routes/bot-payments.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -96,6 +97,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/scheduler', schedulerRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/campaigns', campaignRoutes);
+app.use('/api/bot-payments', botPaymentRoutes);
 
 // ── Health Check ───────────────────────────────────────────
 app.get('/health', async (req, res) => {
