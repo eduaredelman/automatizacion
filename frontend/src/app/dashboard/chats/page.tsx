@@ -7,7 +7,7 @@ import ChatWindow from '@/components/ChatWindow';
 import { MessageSquare, Plus, X, Send, Loader2 } from 'lucide-react';
 
 export default function ChatsPage() {
-  const { conversations, setConversations, activeConversationId, setActiveConversation } = useChatStore();
+  const { conversations, setConversations, activeConversationId, setActiveConversation, pendingOpenPhone, setPendingOpenPhone } = useChatStore();
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -50,6 +50,18 @@ export default function ChatsPage() {
     const interval = setInterval(loadChats, 15000);
     return () => clearInterval(interval);
   }, [loadChats]);
+
+  // Abrir conversación pendiente desde página de pagos (funciona incluso si la página ya estaba montada)
+  useEffect(() => {
+    if (!pendingOpenPhone || conversations.length === 0) return;
+    const conv = conversations.find(c =>
+      c.phone === pendingOpenPhone ||
+      c.phone === `51${pendingOpenPhone}` ||
+      `51${c.phone}` === pendingOpenPhone
+    );
+    if (conv) setActiveConversation(conv.id);
+    setPendingOpenPhone(null);
+  }, [pendingOpenPhone, conversations, setActiveConversation, setPendingOpenPhone]);
 
   const handleArchive = useCallback(async (id: string) => {
     try {
