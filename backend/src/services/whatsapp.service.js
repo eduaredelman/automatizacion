@@ -123,21 +123,11 @@ const sendMediaMessage = async (phone, mediaId, mediaType, caption = '') => {
   }
 };
 
-// Delete a business-sent message for everyone (Meta Cloud API)
+// Meta Cloud API no soporta eliminar mensajes enviados por business via API.
+// El soft-delete en DB (is_deleted=true) oculta el mensaje en el panel CRM.
 const deleteForEveryone = async (wamid) => {
-  try {
-    await axios.delete(`${WA_BASE()}/messages/${wamid}`, {
-      headers: WA_HEADERS(),
-      params: { messaging_product: 'whatsapp' },
-    });
-    logger.info('WhatsApp message deleted for everyone', { wamid });
-  } catch (err) {
-    logger.warn('Failed to delete WhatsApp message for everyone', {
-      wamid,
-      error: err.response?.data || err.message,
-    });
-    // Non-fatal — DB soft-delete still applies
-  }
+  // No-op: limitación de la plataforma WhatsApp Business
+  logger.info('deleteForEveryone: solo soft-delete en DB (Meta API no soporta unsend business)', { wamid });
 };
 
 const markAsRead = async (messageId) => {
@@ -170,6 +160,7 @@ const parseWebhookPayload = (body) => {
       mediaId: msg.image?.id || msg.document?.id || msg.audio?.id || msg.video?.id || null,
       mediaMime: msg.image?.mime_type || msg.document?.mime_type || msg.audio?.mime_type || msg.video?.mime_type || null,
       mediaCaption: msg.image?.caption || msg.document?.caption || null,
+      mediaFilename: msg.document?.filename || null,
       location: msg.location || null,
       context: msg.context || null,
     };

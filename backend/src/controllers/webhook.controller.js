@@ -44,7 +44,7 @@ const receive = async (req, res) => {
     const parsed = whatsapp.parseWebhookPayload(req.body);
     if (!parsed) return;
 
-    const { phone, displayName, messageId, type: rawType, text, mediaId, mediaMime, mediaCaption } = parsed;
+    const { phone, displayName, messageId, type: rawType, text, mediaId, mediaMime, mediaCaption, mediaFilename } = parsed;
     // Normalizar 'voice' → 'audio' para coincidir con el CHECK constraint de la BD
     const type = rawType === 'voice' ? 'audio' : rawType;
     logger.info('📱 Mensaje entrante', { phone, type, messageId });
@@ -124,14 +124,37 @@ const receive = async (req, res) => {
     const msgType = validTypes.includes(type) ? type : 'text';
     const msgResult = await query(
       `INSERT INTO messages
-         (conversation_id, whatsapp_id, direction, sender_type, message_type, body, media_mime)
-       VALUES ($1, $2, 'inbound', 'client', $3, $4, $5)
+         (conversation_id, whatsapp_id, direction, sender_type, message_type, body, media_mime, media_filename)
+       VALUES ($1, $2, 'inbound', 'client', $3, $4, $5, $6)
        ON CONFLICT (whatsapp_id) DO NOTHING
        RETURNING *`,
-      [conversation.id, messageId, msgType, text || mediaCaption || null, mediaMime || null]
+      [conversation.id, messageId, msgType, text || mediaCaption || null, mediaMime || null, mediaFilename || null]
     );
 
     const message = msgResult.rows[0];
+
+    // Descargar media para documentos y videos (independiente de modo bot/human)
+    if (message && ['document', 'video'].includes(type) && mediaId) {
+      whatsapp.downloadMedia(mediaId).then(mediaInfo => {
+        query(
+          `UPDATE messages SET media_url = $1, media_mime = $2, media_filename = $3, media_size = $4 WHERE id = $5`,
+          [mediaInfo.url, mediaInfo.mime || mediaMime, mediaInfo.filename || mediaFilename, mediaInfo.size, message.id]
+        ).then(() => {
+          const { emitToAgents, emitToConversation } = require('../config/socket');
+          const payload = {
+            conversationId: conversation.id,
+            messageId: message.id,
+            media_url: mediaInfo.url,
+            media_mime: mediaInfo.mime || mediaMime,
+            media_filename: mediaInfo.filename || mediaFilename,
+          };
+          emitToAgents('message_media_ready', payload);
+          emitToConversation(conversation.id, 'message_media_ready', payload);
+        }).catch(() => {});
+      }).catch(err => {
+        logger.warn('Falló descarga de documento/video', { messageId: message.id, error: err.message });
+      });
+    }
     if (!message) return; // duplicado
 
     // ¿Conversación resuelta? → re-abrir como bot cuando el cliente escribe de nuevo

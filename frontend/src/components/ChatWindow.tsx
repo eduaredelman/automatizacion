@@ -164,6 +164,16 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
         }
       };
 
+      const handleMediaReady = (data: { conversationId: string; messageId: string; media_url: string; media_mime: string; media_filename: string }) => {
+        if (data.conversationId === conversation.id) {
+          updateMessage(data.conversationId, data.messageId, {
+            media_url: data.media_url,
+            media_mime: data.media_mime,
+            media_filename: data.media_filename,
+          });
+        }
+      };
+
       const handleReconnect = () => {
         joinConversation(conversation.id);
         loadMessages();
@@ -173,6 +183,7 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
       socket.on('message_deleted', handleMessageDeleted);
       socket.on('message_deleted_for_all', handleMessageDeletedForAll);
       socket.on('message_edited', handleMessageEdited);
+      socket.on('message_media_ready', handleMediaReady);
       socket.on('connect', handleReconnect);
 
       return () => {
@@ -181,6 +192,7 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
         socket.off('message_deleted', handleMessageDeleted);
         socket.off('message_deleted_for_all', handleMessageDeletedForAll);
         socket.off('message_edited', handleMessageEdited);
+        socket.off('message_media_ready', handleMediaReady);
         socket.off('connect', handleReconnect);
       };
     }
