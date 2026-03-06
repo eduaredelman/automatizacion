@@ -234,7 +234,7 @@ const registerWisphub = async (req, res) => {
     const { id } = req.params;
 
     const result = await query(
-      `SELECT p.*, c.phone, c.display_name FROM payments p
+      `SELECT p.*, c.phone AS conv_phone, c.display_name FROM payments p
        LEFT JOIN conversations c ON c.id = p.conversation_id
        WHERE p.id = $1`,
       [id]
@@ -243,27 +243,46 @@ const registerWisphub = async (req, res) => {
     const payment = result.rows[0];
     if (payment.status !== 'validated') return error(res, 'Solo se pueden registrar pagos validados', 400);
 
-    // Obtener wisphub_id del cliente
+    const phone = payment.conv_phone || null;
     let wisphubId = null;
+
+    // 1. Buscar en clients local por client_id
     if (payment.client_id) {
-      const clientResult = await query('SELECT wisphub_id FROM clients WHERE id = $1', [payment.client_id]);
-      wisphubId = clientResult.rows[0]?.wisphub_id || null;
+      const r = await query('SELECT wisphub_id FROM clients WHERE id = $1', [payment.client_id]);
+      wisphubId = r.rows[0]?.wisphub_id || null;
     }
 
-    // Si no hay client_id, buscar por teléfono en clients
-    if (!wisphubId && payment.phone) {
-      const byPhone = await query(
-        'SELECT wisphub_id FROM clients WHERE phone = $1 OR phone = $2 LIMIT 1',
-        [payment.phone, payment.phone?.replace(/^51/, '')]
+    // 2. Buscar en clients local por teléfono
+    if (!wisphubId && phone) {
+      const r = await query(
+        `SELECT wisphub_id FROM clients WHERE phone = $1 OR phone = $2 LIMIT 1`,
+        [phone, phone.replace(/^51/, '')]
       );
-      wisphubId = byPhone.rows[0]?.wisphub_id || null;
+      wisphubId = r.rows[0]?.wisphub_id || null;
+    }
+
+    // 3. Buscar directamente en WispHub API por teléfono/nombre del pagador
+    if (!wisphubId && phone) {
+      const client = await wisphub.buscarCliente(phone, payment.payer_name || payment.display_name || null);
+      if (client) {
+        wisphubId = client.id_servicio || client.id;
+        // Guardar en local para futuros lookups
+        if (wisphubId) {
+          await query(
+            `INSERT INTO clients (wisphub_id, phone, name, service_id, last_synced_at)
+             VALUES ($1,$2,$3,$4,NOW())
+             ON CONFLICT (wisphub_id) DO UPDATE SET phone=$2, last_synced_at=NOW()`,
+            [String(wisphubId), phone, client.nombre || client.name || null, String(wisphubId)]
+          );
+        }
+      }
     }
 
     if (!wisphubId) {
-      return error(res, 'No se encontró ID WispHub para este cliente. Vincúlalo primero en el chat.', 422);
+      return error(res, 'No se encontró cliente en WispHub. Verifica que el teléfono esté registrado.', 422);
     }
 
-    await wisphub.registrarPago(wisphubId, {
+    await wisphub.registrarPago(String(wisphubId), {
       amount:        payment.amount,
       method:        payment.payment_method,
       operationCode: payment.operation_code,
