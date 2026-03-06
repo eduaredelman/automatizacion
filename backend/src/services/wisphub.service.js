@@ -462,13 +462,13 @@ const _resolverFormaPago = async (metodo) => {
   return null;
 };
 
-// Endpoint confirmado en proyecto fiber-peru con Culqi:
-// POST /facturas/{id_servicio}/registrar-pago/
-// Campos: monto, forma_pago (int), accion (int), fecha_pago (YYYY-MM-DD HH:MM), referencia
+// POST /facturas/{id_factura}/registrar-pago/
+// clienteId = id_servicio del cliente en WispHub
+// El endpoint necesita el ID de la FACTURA (id_factura), no el id_servicio del cliente.
 const registrarPago = async (clienteId, paymentData) => {
   const pad = (n) => String(n).padStart(2, '0');
 
-  // Usar fecha real del pago si está disponible, si no, fecha/hora actual
+  // Fecha del pago
   let fechaPago;
   if (paymentData.paymentDate) {
     const d = new Date(paymentData.paymentDate);
@@ -486,6 +486,31 @@ const registrarPago = async (clienteId, paymentData) => {
     throw new Error(`No se encontró forma_pago válida para método "${metodo}". Configura WISPHUB_FORMA_PAGO_${metodo.toUpperCase()} en backend/.env`);
   }
 
+  // Buscar la factura pendiente del cliente para obtener su id_factura
+  const estadosPendientes = new Set([
+    'pendiente', 'Pendiente', 'pendiente de pago', 'Pendiente de Pago',
+    'no pagada', 'No Pagada', 'vencida', 'Vencida', 'por pagar', 'Por Pagar',
+  ]);
+
+  let facturaId = null;
+  try {
+    const { data: facturasData } = await http.get('/facturas/', {
+      params: { id_servicio: clienteId, limit: 50 }
+    });
+    const facturas = facturasData.results || facturasData || [];
+    const pendiente = facturas.find(f => estadosPendientes.has(f.estado || f.status || ''));
+    if (pendiente) {
+      facturaId = pendiente.id_factura || pendiente.id;
+      logger.info('WispHub: factura pendiente encontrada', { clienteId, facturaId, estado: pendiente.estado });
+    }
+  } catch (err) {
+    logger.warn('WispHub: error buscando factura pendiente', { clienteId, error: err.message });
+  }
+
+  if (!facturaId) {
+    throw new Error(`No se encontró factura pendiente para cliente WispHub ${clienteId}`);
+  }
+
   const body = {
     monto: paymentData.amount,
     forma_pago: formaPago,
@@ -495,9 +520,9 @@ const registrarPago = async (clienteId, paymentData) => {
     referencia: paymentData.operationCode || '',
   };
 
-  logger.info('WispHub: registrando pago', { clienteId, monto: body.monto, fecha: fechaPago, metodo, formaPago });
-  const { data } = await http.post(`/facturas/${clienteId}/registrar-pago/`, body);
-  logger.info('WispHub: pago registrado exitosamente', { clienteId, monto: body.monto });
+  logger.info('WispHub: registrando pago', { clienteId, facturaId, monto: body.monto, fecha: fechaPago, metodo, formaPago });
+  const { data } = await http.post(`/facturas/${facturaId}/registrar-pago/`, body);
+  logger.info('WispHub: pago registrado exitosamente', { clienteId, facturaId, monto: body.monto });
   return data;
 };
 
