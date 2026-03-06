@@ -469,6 +469,26 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// AUTO-RESOLVER CONVERSACIÓN
+// ─────────────────────────────────────────────────────────────
+
+const RESOLVE_KEYWORDS = /^(gracias|grax|grac|ok|okey|oky|listo|listo!|solucionado|resuelto|perfecto|excelente|genial|entendido|de acuerdo|claro|ya|bueno|👍|✅|😊)[\s.!]*$/i;
+
+const autoResolveConversation = async (conversationId, reason = 'auto') => {
+  try {
+    await query(
+      `UPDATE conversations SET status = 'resolved', updated_at = NOW() WHERE id = $1 AND status != 'resolved'`,
+      [conversationId]
+    );
+    await logEvent(conversationId, null, 'conversation_resolved', reason);
+    await emitSocketEvent('conversation_updated', { conversationId, status: 'resolved' });
+    logger.info('Conversación auto-resuelta', { conversationId, reason });
+  } catch (err) {
+    logger.warn('autoResolve error', { conversationId, error: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
 // PROCESAR PAGO PENDIENTE (helper compartido)
 // ─────────────────────────────────────────────────────────────
 
@@ -493,6 +513,11 @@ const processPendingPayment = async (conversation, phone, paymentId) => {
   }
   await logEvent(conversation.id, paymentId, 'payment_processed', result.status);
   await emitSocketEvent('payment_update', { conversationId: conversation.id, status: result.status });
+
+  // Auto-resolver cuando el pago fue exitoso
+  if (['success', 'registered_no_debt'].includes(result.status)) {
+    await autoResolveConversation(conversation.id, 'pago_exitoso');
+  }
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -614,6 +639,20 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
         clientInfo.recentPayment = recentPayRes.rows[0];
       }
     } catch {}
+
+    // 5a. ¿Mensaje de cierre/agradecimiento? → auto-resolver
+    if (RESOLVE_KEYWORDS.test(text.trim())) {
+      // Verificar que ya hubo interacción previa (al menos un mensaje del bot)
+      const prevBot = history.filter(m => m.sender_type === 'bot' || m.sender_type === 'agent');
+      if (prevBot.length > 0) {
+        const clientName = clientInfo.name !== 'Cliente' ? `, *${clientInfo.name}*` : '';
+        const closeMsg = `¡De nada${clientName}! 😊 Si necesitas algo más, no dudes en escribirnos. *Fiber Perú* siempre disponible para ayudarte. 🌐`;
+        await whatsapp.sendTextMessage(phone, closeMsg);
+        await saveOutboundMessage(conversation.id, closeMsg, 'bot');
+        await autoResolveConversation(conversation.id, 'agradecimiento_cliente');
+        return;
+      }
+    }
 
     // 5. ¿Quiere hablar con humano?
     const quiereHumano = /asesor|agente|humano|persona|hablar con alguien|no entiendo/i.test(text);

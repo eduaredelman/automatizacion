@@ -268,19 +268,6 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
     }
   };
 
-  const handleResolve = async () => {
-    if (!confirm('¿Marcar esta conversación como resuelta?\nEl bot se reactivará automáticamente si el cliente escribe de nuevo.')) return;
-    setActionLoading(true);
-    try {
-      await api.resolveChat(conversation.id);
-      onUpdate();
-    } catch (err) {
-      console.error('Resolve failed:', err);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleSaveName = async () => {
     const trimmed = newName.trim();
     if (!trimmed || trimmed === (conversation.display_name || conversation.phone)) {
@@ -505,18 +492,6 @@ export default function ChatWindow({ conversation, onBack, onUpdate }: ChatWindo
             >
               {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
               <span className="hidden sm:inline">Activar Bot</span>
-            </button>
-          )}
-
-          {/* Resolver → visible cuando el asesor tiene control O el bot está activo */}
-          {(isHuman || isBot) && (
-            <button
-              onClick={handleResolve}
-              disabled={actionLoading}
-              className="btn-ghost text-xs text-green-400 hover:bg-green-500/10 border border-green-500/20"
-            >
-              {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              <span className="hidden sm:inline">Resolver</span>
             </button>
           )}
 
