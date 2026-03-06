@@ -186,6 +186,7 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
         date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
         method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
         operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
+        facturaId: debtInfo.factura_id || null,
       });
     } catch (regErr) {
       logger.warn('WispHub registrarPago falló (no fatal)', {

@@ -136,6 +136,7 @@ const validatePayment = async (req, res) => {
             method:        payment.payment_method,
             operationCode: payment.operation_code,
             paymentDate:   payment.payment_date,
+            facturaId:     payment.factura_id || null,
           });
           await query('UPDATE payments SET registered_wisphub = true WHERE id = $1', [id]);
           wisphubRegistered = true;
