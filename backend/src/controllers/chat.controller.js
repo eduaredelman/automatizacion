@@ -499,9 +499,7 @@ const editMessage = async (req, res) => {
     if (!body?.trim()) return error(res, 'Contenido requerido', 400);
 
     const check = await query(
-      `SELECT m.*, c.phone FROM messages m
-       JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.id = $1 AND m.conversation_id = $2`,
+      'SELECT * FROM messages WHERE id = $1 AND conversation_id = $2',
       [msgId, id]
     );
     if (!check.rows.length) return error(res, 'Mensaje no encontrado', 404);
@@ -509,23 +507,12 @@ const editMessage = async (req, res) => {
     if (msg.sender_type === 'client') return error(res, 'No se puede editar mensajes del cliente', 403);
     if (msg.message_type !== 'text') return error(res, 'Solo se pueden editar mensajes de texto', 400);
 
-    // Delete old WhatsApp message + send new one so client sees the change
-    let newWamid = msg.whatsapp_id;
-    if (msg.whatsapp_id) {
-      await whatsapp.deleteForEveryone(msg.whatsapp_id);
-      try {
-        const sent = await whatsapp.sendTextMessage(msg.phone, body.trim());
-        newWamid = sent?.messages?.[0]?.id || msg.whatsapp_id;
-      } catch (waErr) {
-        logger.warn('editMessage: WhatsApp resend failed', { msgId, error: waErr.message });
-      }
-    }
-
+    // Actualizar solo en el CRM — la API de WhatsApp Business no permite editar mensajes enviados
     const result = await query(
-      `UPDATE messages SET body = $1, is_edited = true, edited_at = NOW(), whatsapp_id = $2
-       WHERE id = $3
+      `UPDATE messages SET body = $1, is_edited = true, edited_at = NOW()
+       WHERE id = $2
        RETURNING id, conversation_id, body, is_edited, edited_at`,
-      [body.trim(), newWamid, msgId]
+      [body.trim(), msgId]
     );
 
     const updated = result.rows[0];
