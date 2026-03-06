@@ -90,6 +90,8 @@ export const api = {
     getApi().patch(`/payments/${id}/reject`, { reason }),
   deletePayment: (id: string) =>
     getApi().delete(`/payments/${id}`),
+  registerWisphub: (id: string) =>
+    getApi().post(`/payments/${id}/register-wisphub`),
 };
 
 export default api;

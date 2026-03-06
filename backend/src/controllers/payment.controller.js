@@ -228,4 +228,58 @@ const deletePayment = async (req, res) => {
   }
 };
 
-module.exports = { listPayments, getStats, getPayment, validatePayment, rejectPayment, deletePayment };
+// POST /api/payments/:id/register-wisphub - Registrar pago validado en WispHub (retry)
+const registerWisphub = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await query(
+      `SELECT p.*, c.phone, c.display_name FROM payments p
+       LEFT JOIN conversations c ON c.id = p.conversation_id
+       WHERE p.id = $1`,
+      [id]
+    );
+    if (!result.rows.length) return error(res, 'Pago no encontrado', 404);
+    const payment = result.rows[0];
+    if (payment.status !== 'validated') return error(res, 'Solo se pueden registrar pagos validados', 400);
+
+    // Obtener wisphub_id del cliente
+    let wisphubId = null;
+    if (payment.client_id) {
+      const clientResult = await query('SELECT wisphub_id FROM clients WHERE id = $1', [payment.client_id]);
+      wisphubId = clientResult.rows[0]?.wisphub_id || null;
+    }
+
+    // Si no hay client_id, buscar por teléfono en clients
+    if (!wisphubId && payment.phone) {
+      const byPhone = await query(
+        'SELECT wisphub_id FROM clients WHERE phone = $1 OR phone = $2 LIMIT 1',
+        [payment.phone, payment.phone?.replace(/^51/, '')]
+      );
+      wisphubId = byPhone.rows[0]?.wisphub_id || null;
+    }
+
+    if (!wisphubId) {
+      return error(res, 'No se encontró ID WispHub para este cliente. Vincúlalo primero en el chat.', 422);
+    }
+
+    await wisphub.registrarPago(wisphubId, {
+      amount:        payment.amount,
+      method:        payment.payment_method,
+      operationCode: payment.operation_code,
+      paymentDate:   payment.payment_date,
+      facturaId:     payment.factura_id || null,
+    });
+
+    await query('UPDATE payments SET registered_wisphub = true WHERE id = $1', [id]);
+    logger.info('Pago registrado en WispHub (retry)', { paymentId: id, wisphubId });
+
+    return success(res, { id, registered_wisphub: true }, 'Pago registrado en WispHub ✅');
+  } catch (err) {
+    const msg = err.response?.data?.detail || err.response?.data?.message || err.message;
+    logger.error('registerWisphub error', { paymentId: req.params.id, error: msg });
+    return error(res, `Error al registrar en WispHub: ${msg}`);
+  }
+};
+
+module.exports = { listPayments, getStats, getPayment, validatePayment, rejectPayment, deletePayment, registerWisphub };

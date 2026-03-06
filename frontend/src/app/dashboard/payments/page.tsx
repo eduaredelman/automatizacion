@@ -8,7 +8,7 @@ import { es } from 'date-fns/locale';
 import VoucherModal from '@/components/VoucherModal';
 import {
   CreditCard, RefreshCw, Trash2, CheckCircle2,
-  Clock, AlertTriangle, DollarSign, MessageSquare, Search, WifiOff,
+  Clock, AlertTriangle, DollarSign, MessageSquare, Search, WifiOff, Upload,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -82,6 +82,7 @@ export default function PaymentsPage() {
   const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [registeringId, setRegisteringId] = useState<string | null>(null);
 
   // Debounce de búsqueda
   const handleSearchChange = (val: string) => {
@@ -129,6 +130,21 @@ export default function PaymentsPage() {
       setPendingOpenPhone(p.phone);
     }
     router.push('/dashboard/chats');
+  };
+
+  const handleRegisterWisphub = async (p: Payment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRegisteringId(p.id);
+    try {
+      await api.registerWisphub(p.id);
+      setPayments(prev => prev.map(x => x.id === p.id ? { ...x, registered_wisphub: true } : x));
+      load(); // refresh stats
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Error al registrar';
+      alert(msg);
+    } finally {
+      setRegisteringId(null);
+    }
   };
 
   const handleDelete = async (p: Payment, e: React.MouseEvent) => {
@@ -375,6 +391,19 @@ export default function PaymentsPage() {
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
                           </button>
+                          {p.status === 'validated' && !p.registered_wisphub && (
+                            <button
+                              onClick={(e) => handleRegisterWisphub(p, e)}
+                              disabled={registeringId === p.id}
+                              title="Registrar en WispHub"
+                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-yellow-400 hover:bg-yellow-500/10 transition-all disabled:opacity-50"
+                            >
+                              {registeringId === p.id
+                                ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                : <Upload className="w-3.5 h-3.5" />
+                              }
+                            </button>
+                          )}
                           <button
                             onClick={(e) => handleDelete(p, e)}
                             disabled={deletingId === p.id}
