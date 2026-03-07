@@ -166,9 +166,33 @@ const receive = async (req, res) => {
       logger.info('🔄 Conversación resuelta reabierta automáticamente por nuevo mensaje', { phone });
     }
 
-    // ¿Asesor en control? → emitir al panel y no responder
+    // ¿Asesor en control? → emitir al panel y NO responder con el bot
+    // IMPORTANTE: el estado 'human' solo pausa el auto-reply del bot.
+    // Los mensajes SIEMPRE se guardan y se muestran en tiempo real al asesor.
     if (conversation.status === 'human') {
       logger.info('👨‍💼 Modo humano activo, bot pausado', { phone });
+
+      // Descargar imagen/audio en background para que el asesor pueda verlos
+      if (mediaId && (type === 'image' || type === 'audio') && message) {
+        whatsapp.downloadMedia(mediaId).then(async (mediaInfo) => {
+          await query(
+            `UPDATE messages SET media_url = $1, media_mime = $2, media_filename = $3, media_size = $4 WHERE id = $5`,
+            [mediaInfo.url, mediaInfo.mime || mediaMime, mediaInfo.filename || mediaFilename, mediaInfo.size || null, message.id]
+          ).catch(() => {});
+          const { emitToAgents, emitToConversation } = require('../config/socket');
+          const payload = {
+            conversationId: conversation.id,
+            messageId: message.id,
+            media_url: mediaInfo.url,
+            media_mime: mediaInfo.mime || mediaMime,
+            media_filename: mediaInfo.filename || mediaFilename,
+          };
+          emitToAgents('message_media_ready', payload);
+          emitToConversation(conversation.id, 'message_media_ready', payload);
+          logger.info('Media descargado en modo humano', { phone, type, url: mediaInfo.url });
+        }).catch(err => logger.warn('Fallo descarga media en modo humano', { phone, type, error: err.message }));
+      }
+
       await emitSocketEvent('new_message', { conversation, message });
       return;
     }
