@@ -129,9 +129,19 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       );
     }
 
-    // Consultar deuda — solo por clienteId (id_servicio). No filtrar por nombre:
-    // las facturas en WispHub pueden tener titular diferente al nombre registrado.
-    const debtInfo = await wisphub.consultarDeuda(clientId);
+    // Obtener plan_price del cliente en BD local para filtrar la factura correcta en WispHub.
+    // WispHub puede devolver facturas de otros clientes; el plan_price permite identificar
+    // la factura que realmente pertenece a este cliente.
+    let planPrice = null;
+    try {
+      const planRow = await query(
+        'SELECT plan_price FROM clients WHERE wisphub_id = $1',
+        [String(clientId)]
+      );
+      planPrice = parseFloat(planRow.rows[0]?.plan_price) || null;
+    } catch {}
+
+    const debtInfo = await wisphub.consultarDeuda(clientId, planPrice);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
     logger.info('Debt info', {
