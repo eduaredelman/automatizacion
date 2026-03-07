@@ -778,7 +778,7 @@ const buildPaymentResponse = (result) => {
       const motivo = aiData?.futureDateFound
         ? `fecha futura (${fechaVoucher})`
         : `año ${año} en el comprobante`;
-      return `⚠️ *Comprobante no válido*\n\nDetectamos que el comprobante tiene ${motivo}.\n\nPara resolver problemas con tu internet, verificar tu línea o programar visita de técnico, comunícate con soporte: *932258382* 🛠️`;
+      return `⏳ Estamos demorando un poco en procesar tu pago. El administrador revisará tu comprobante y te confirmará pronto. 😊`;
     }
 
     case 'amount_mismatch': {
