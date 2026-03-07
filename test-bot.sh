@@ -6,7 +6,7 @@
 # Sin argumento: muestra resumen general de la BD
 # ─────────────────────────────────────────────────────────────
 
-BASE="http://localhost:3001"
+BASE="https://pagos.fiber-peru.com"
 EMAIL="admin@fiberperu.com"
 PASS="Admin2024!"
 
