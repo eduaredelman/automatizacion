@@ -67,7 +67,41 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       return { status: 'manual_review', paymentId };
     }
 
-    logger.info('AI Vision data received', { confidence: aiVisionData.confidence, amount: aiVisionData.amount });
+    logger.info('AI Vision data received', {
+      confidence: aiVisionData.confidence,
+      amount: aiVisionData.amount,
+      voucherStatus: aiVisionData.voucherStatus,
+      yearDetected: aiVisionData.yearDetected,
+      monthDetected: aiVisionData.monthDetected,
+      fraudDetected: aiVisionData.fraudDetected,
+    });
+
+    // ── Detección de fraude: comprobante de año anterior o fecha futura ──────
+    if (aiVisionData.fraudDetected || aiVisionData.futureDateFound) {
+      const motivo = aiVisionData.futureDateFound
+        ? `Fecha futura detectada en el comprobante (${aiVisionData.paymentDate}). No se aceptan pagos con fecha futura.`
+        : `Comprobante de año anterior detectado (${aiVisionData.yearDetected || 'desconocido'}). Solo se aceptan comprobantes del año actual.`;
+      logger.warn('Fraude detectado en comprobante', { paymentId, motivo, voucherStatus: aiVisionData.voucherStatus });
+      await updatePayment({
+        status: 'rejected',
+        rejection_reason: `⚠️ COMPROBANTE INVÁLIDO: ${motivo}`,
+      });
+      return {
+        status: 'fraud_detected',
+        paymentId,
+        aiVisionData,
+        reason: motivo,
+      };
+    }
+
+    // ── Mes diferente: válido pero corresponde a otro mes ───────────────────
+    if (aiVisionData.voucherStatus === 'MES_DIFERENTE' && aiVisionData.monthDetected) {
+      logger.info('Comprobante de mes diferente al actual', {
+        paymentId, mesDetectado: aiVisionData.monthDetected, razon: aiVisionData.voucherStatusReason,
+      });
+      // Continúa el proceso normal — payment_date ya tiene la fecha correcta
+      // El panel de "Pagos del Bot" filtrará por el mes de payment_date automáticamente
+    }
 
     if (aiVisionData.amount === null || aiVisionData.amount === undefined) {
       await updatePayment({ status: 'manual_review', rejection_reason: 'No se pudo extraer el monto del comprobante.' });

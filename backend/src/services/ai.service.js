@@ -31,47 +31,77 @@ const analyzeVoucherWithAI = async (imagePath) => {
     const base64Image = imageBuffer.toString('base64');
     const mimeType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
 
+    // Fecha actual dinámica para validación de año/mes
+    const now = new Date();
+    const currentYear  = now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentDateStr = now.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
     const response = await client.chat.completions.create({
       model: 'gpt-4o',
-      max_tokens: 500,
+      max_tokens: 700,
       messages: [
         {
           role: 'user',
           content: [
             {
               type: 'text',
-              text: `Analiza esta imagen y devuelve JSON con los siguientes campos.
+              text: `Eres un sistema de verificación de comprobantes de pago de servicios de internet.
 
-PRIMERO clasifica el tipo de imagen:
-- "comprobante_pago": screenshot de Yape, Plin, transferencia bancaria, voucher de pago
-- "imagen_tecnica": foto de router, cables de fibra, luces del equipo, instalación de red
-- "otro": selfie, meme, documento no relacionado, captura de pantalla sin relación a pagos/red
+FECHA ACTUAL DEL SISTEMA: ${currentDateStr} (año ${currentYear}, mes ${currentMonth})
 
+PASO 1 — Clasifica el tipo de imagen:
+- "comprobante_pago": screenshot de Yape, Plin, transferencia bancaria, voucher de depósito/pago
+- "imagen_tecnica": foto de router, cables de fibra, luces de equipo, instalación de red
+- "otro": selfie, meme, documento no relacionado, captura sin relación a pagos o red
+
+PASO 2 — Si es comprobante_pago, extrae y valida:
+
+VALIDACIÓN DE AÑO (CRÍTICA):
+- Lee el año que aparece en la fecha del comprobante
+- Si el año NO es ${currentYear} → fraude_detectado: true, estado_voucher: "POSIBLE_FRAUDE"
+- Razón: un ISP no acepta comprobantes de años anteriores (son reutilizados)
+
+VALIDACIÓN DE MES:
+- Extrae el número de mes de la fecha del comprobante (1=Enero … 12=Diciembre)
+- Si mes_detectado != ${currentMonth} pero el año es correcto → estado_voucher: "MES_DIFERENTE"
+  Esto es VÁLIDO (pago adelantado o de otro mes del mismo año)
+- Si mes y año son correctos → estado_voucher: "VALIDO"
+
+VALIDACIÓN DE FECHA FUTURA:
+- Si la fecha del comprobante es posterior a hoy → fecha_futura: true, estado_voucher: "POSIBLE_FRAUDE"
+
+Devuelve EXACTAMENTE este JSON (sin markdown, sin texto extra):
 {
   "tipo_imagen": "comprobante_pago|imagen_tecnica|otro",
-  "descripcion_tecnica": "descripción breve si es imagen_tecnica (ej: 'router con luz LOS roja'), sino null",
+  "descripcion_tecnica": "descripción si es imagen_tecnica, sino null",
   "es_comprobante_valido": true/false,
   "medio_pago": "yape|plin|bcp|interbank|bbva|scotiabank|banBif|transferencia|desconocido",
   "monto": número o null,
-  "moneda": "PEN" o "USD",
+  "moneda": "PEN|USD",
   "codigo_operacion": "string o null",
   "fecha": "YYYY-MM-DD o null",
   "hora": "HH:MM o null",
+  "año_detectado": número o null,
+  "mes_detectado": número 1-12 o null,
   "nombre_pagador": "string o null",
   "nombre_receptor": "string o null",
   "telefono": "string o null",
   "ultimos_digitos_tarjeta": "string o null",
+  "fraude_detectado": true/false,
+  "fecha_futura": true/false,
+  "estado_voucher": "VALIDO|MES_DIFERENTE|POSIBLE_FRAUDE|REVISION_MANUAL",
+  "motivo_estado": "explicación breve en español",
   "confianza": "alta|media|baja",
   "razon_invalido": "string si no es válido, sino null"
 }
 
-IMPORTANTE:
-- Si es screenshot de Yape/Plin, busca el monto grande en la pantalla
-- El código de operación puede llamarse: N° operación, código, referencia, número de transacción
-- Fecha actual: ${new Date().toLocaleDateString('es-PE')}
-- Solo extrae datos que están VISIBLES en la imagen
-- Si es imagen_tecnica: describe brevemente lo que ves en descripcion_tecnica
-- Si la imagen no es comprobante de pago, marca es_comprobante_valido: false`
+REGLAS IMPORTANTES:
+- Solo extrae datos VISIBLES en la imagen, no inventes
+- Para Yape/Plin: busca el monto grande central y el nombre del receptor
+- El código de operación puede llamarse: N° operación, código, referencia, N° transacción
+- Si la fecha no es legible → confianza: "baja", estado_voucher: "REVISION_MANUAL"
+- Si la imagen no es comprobante → es_comprobante_valido: false, tipo_imagen: "otro" o "imagen_tecnica"`
             },
             {
               type: 'image_url',
@@ -120,6 +150,13 @@ IMPORTANTE:
       phone: result.telefono,
       cardLast4: result.ultimos_digitos_tarjeta,
       invalidReason: result.razon_invalido,
+      // Nuevos campos de validación de fecha/fraude
+      yearDetected:    result.año_detectado   || null,
+      monthDetected:   result.mes_detectado   || null,
+      fraudDetected:   result.fraude_detectado === true,
+      futureDateFound: result.fecha_futura     === true,
+      voucherStatus:   result.estado_voucher   || 'REVISION_MANUAL',
+      voucherStatusReason: result.motivo_estado || null,
       rawData: result,
     };
 

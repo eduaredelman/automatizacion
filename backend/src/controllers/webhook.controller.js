@@ -772,6 +772,15 @@ const buildPaymentResponse = (result) => {
     case 'client_not_found':
       return `No encontramos tu número registrado como cliente de Fiber Perú.\n\nSi ya tienes contrato: *932258382*\nSi deseas contratar: *940366709* 😊`;
 
+    case 'fraud_detected': {
+      const año = aiData?.yearDetected || 'anterior';
+      const fechaVoucher = aiData?.paymentDate || 'desconocida';
+      const motivo = aiData?.futureDateFound
+        ? `fecha futura (${fechaVoucher})`
+        : `año ${año} en el comprobante`;
+      return `⚠️ *Comprobante no válido*\n\nDetectamos que el comprobante tiene ${motivo}.\n\nSolo aceptamos comprobantes del año y mes actuales.\n\nPor favor envía el comprobante correcto o comunícate con soporte: *932258382*`;
+    }
+
     case 'amount_mismatch': {
       const monthly = debt.monto_mensual;
       const hint = monthly
