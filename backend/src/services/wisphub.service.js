@@ -298,70 +298,51 @@ const consultarDeuda = async (clienteId) => {
       }
     }
 
-    // ─── FILTRAR SOLO LA FACTURA DEL MES ACTUAL ──────────────────────────────
-    // Solo se permite pagar el mes en curso. Facturas de meses anteriores
-    // deben regularizarse con un asesor, no automáticamente por el bot.
-    const limaTime = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
-    const mesActual = limaTime.getMonth() + 1;
-    const anoActual = limaTime.getFullYear();
-
-    const totalPendientesAntesFiltro = pendientes.length;
-
-    const facturasMesActual = pendientes.filter(f => {
-      const fechaRef = f.fecha_vencimiento || f.fecha_emision;
-      if (!fechaRef) return false;
-      const d = new Date(String(fechaRef).includes('T') ? fechaRef : fechaRef + 'T12:00:00');
-      return d.getFullYear() === anoActual && (d.getMonth() + 1) === mesActual;
-    });
-
-    // ¿Tiene facturas de meses anteriores pero ninguna del mes actual?
-    const soloDeudaAntigua = totalPendientesAntesFiltro > 0 && facturasMesActual.length === 0;
-
-    if (facturasMesActual.length > 0) {
-      const f0 = facturasMesActual[0];
-      logger.info('WispHub factura mes actual encontrada', {
-        clienteId,
-        facturaId: f0.id_factura || f0.id,
-        fecha_vencimiento: f0.fecha_vencimiento,
-        mes: mesActual,
-        ano: anoActual,
+    // ─── SELECCIONAR LA FACTURA MÁS RECIENTE (ID más alto = período actual) ───
+    // WispHub resetea fecha_vencimiento a la fecha actual en TODAS las facturas
+    // pendientes, por lo que no se puede confiar en esa fecha para identificar
+    // el mes de la factura. En cambio, ordenamos por id_factura descendente:
+    // la factura con mayor ID es la más recientemente emitida = período actual.
+    if (pendientes.length > 0) {
+      pendientes.sort((a, b) => {
+        const idA = parseInt(a.id_factura || a.id || 0);
+        const idB = parseInt(b.id_factura || b.id || 0);
+        return idB - idA; // desc: mayor ID primero
       });
-      pendientes = facturasMesActual;
-    } else {
-      if (soloDeudaAntigua) {
-        logger.info('WispHub: solo hay facturas de meses anteriores, no del mes actual', {
-          clienteId, mesActual, anoActual, totalAnteriores: totalPendientesAntesFiltro,
-        });
-      }
-      pendientes = [];
+      // Solo trabajar con la factura más reciente
+      pendientes = [pendientes[0]];
     }
 
-    const montoTotal = pendientes.reduce((s, f) =>
-      s + parseFloat(f.total || f.sub_total || f.monto || f.monto_total || 0), 0);
-
-    const montoPrimera = parseFloat(
-      pendientes[0]?.total || pendientes[0]?.sub_total || pendientes[0]?.monto || 0
+    const facturaActual = pendientes[0] || null;
+    const monto = parseFloat(
+      facturaActual?.total || facturaActual?.sub_total || facturaActual?.monto || 0
     );
 
-    const facturaSeleccionada = pendientes[0] || null;
+    if (facturaActual) {
+      logger.info('WispHub factura mas reciente seleccionada', {
+        clienteId,
+        facturaId:        facturaActual.id_factura || facturaActual.id,
+        fecha_vencimiento: facturaActual.fecha_vencimiento,
+        fecha_emision:    facturaActual.fecha_emision,
+        monto,
+      });
+      logger.info('WispHub monto factura obtenido', { clienteId, monto });
+    }
+
     logger.info('WispHub deuda resultado', {
       clienteId,
       pendientes: pendientes.length,
-      monto: montoTotal,
-      monto_mensual: montoPrimera,
-      soloDeudaAntigua,
-      facturaId: facturaSeleccionada?.id_factura || facturaSeleccionada?.id || null,
-      fecha_vencimiento: facturaSeleccionada?.fecha_vencimiento || null,
+      monto_mensual: monto,
+      facturaId: facturaActual?.id_factura || facturaActual?.id || null,
     });
 
     return {
-      tiene_deuda:      pendientes.length > 0,
-      solo_deuda_antigua: soloDeudaAntigua,
-      monto_deuda:      parseFloat(montoTotal.toFixed(2)),
-      monto_mensual:    parseFloat(montoPrimera.toFixed(2)),
+      tiene_deuda:   pendientes.length > 0,
+      monto_deuda:   monto,
+      monto_mensual: monto,
       cantidad_facturas: pendientes.length,
-      factura_id:       facturaSeleccionada?.id_factura || facturaSeleccionada?.id || null,
-      facturas:         pendientes,
+      factura_id:    facturaActual?.id_factura || facturaActual?.id || null,
+      facturas:      pendientes,
     };
   } catch (err) {
     logger.error('WispHub deuda query failed', { clienteId, error: err.message });

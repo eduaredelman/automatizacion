@@ -198,28 +198,20 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
   const client = getOpenAI();
 
   // Información del cliente para contexto
-  const clientName          = clientInfo?.name || clientInfo?.nombre;
-  const clientPlan          = clientInfo?.plan;
-  const clientDebt          = clientInfo?.debt_amount ?? clientInfo?.deuda;
-  const cantFacturas        = clientInfo?.cantidad_facturas ?? null;
-  const montoMensual        = clientInfo?.monto_mensual ?? null;
-  const periodos            = clientInfo?.periodos ?? [];
-  const serviceStatus       = clientInfo?.service_status ?? 'activo'; // 'activo' | 'cortado'
-  const recentPayment       = clientInfo?.recentPayment ?? null;
-  const wasResolved         = clientInfo?.wasResolved ?? false;
+  const clientName    = clientInfo?.name || clientInfo?.nombre;
+  const clientPlan    = clientInfo?.plan;
+  const montoMensual  = clientInfo?.monto_mensual ?? clientInfo?.debt_amount ?? null;
+  const serviceStatus = clientInfo?.service_status ?? 'activo';
+  const recentPayment = clientInfo?.recentPayment ?? null;
+  const wasResolved   = clientInfo?.wasResolved ?? false;
 
-  // Construir desglose de deuda legible
+  // Solo mostrar cuota mensual — nunca deuda acumulada (confunde y alarma al cliente)
   let deudaTexto = 'sin datos en este momento';
-  if (clientDebt != null) {
-    if (clientDebt === 0) {
+  if (montoMensual != null) {
+    if (montoMensual === 0) {
       deudaTexto = 'S/ 0.00 — cuenta al día ✅';
-    } else if (cantFacturas && montoMensual) {
-      const periodoStr = periodos.length > 0 ? ` (${periodos.join(', ')})` : '';
-      deudaTexto = `S/ ${clientDebt} total — ${cantFacturas} ${cantFacturas === 1 ? 'factura pendiente' : 'facturas pendientes'} × S/ ${montoMensual}/mes${periodoStr}`;
-    } else if (cantFacturas) {
-      deudaTexto = `S/ ${clientDebt} — ${cantFacturas} ${cantFacturas === 1 ? 'factura pendiente' : 'facturas pendientes'}`;
     } else {
-      deudaTexto = `S/ ${clientDebt}`;
+      deudaTexto = `S/ ${montoMensual} — cuota mensual del servicio`;
     }
   }
 
@@ -305,14 +297,13 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
    → Ejemplo: "¡Buenas tardes, [Nombre]! 😊 ¿En qué puedo ayudarte hoy?"
    → NO menciones deuda ni servicio a menos que el cliente lo pregunte.
 
-2. CONSULTA DE DEUDA (¿cuánto debo?, ¿tengo deuda?, ¿mi saldo?, ¿por qué es tanto?):
+2. CONSULTA DE CUOTA/PAGO (¿cuánto debo?, ¿mi cuota?, ¿cuánto es?):
    → USA EXACTAMENTE los datos del bloque "Deuda:" de arriba. NUNCA inventes montos.
-   → Si el bloque muestra desglose (N facturas × S/X/mes), EXPLÍCALO al cliente así:
-     "[Nombre], tienes [N] facturas pendientes de S/[X]/mes cada una. Total: S/[total].
-      Para ponerte al día, envíanos el comprobante de pago de Yape, Plin o transferencia."
-   → Si no hay deuda: "[Nombre], tu servicio está al día, no tienes facturas pendientes. 😊"
-   → Si el cliente pregunta POR QUÉ es tanto: explica que son [N] meses acumulados sin pago.
-   → Sin datos de deuda: "En este momento no puedo consultar tu deuda. Comunícate con soporte: *932258382*"
+   → Responde SOLO con la cuota mensual: "Tu cuota mensual es S/ [monto]. Envíanos tu comprobante de pago."
+   → NUNCA menciones deuda total, número de facturas acumuladas ni montos de meses anteriores.
+   → Si el cliente pregunta por meses anteriores o deuda acumulada: "Para regularizar pagos anteriores comunícate con un asesor: *932258382*"
+   → Si no hay deuda: "[Nombre], tu servicio está al día. 😊"
+   → Sin datos: "En este momento no puedo consultar. Comunícate con soporte: *932258382*"
 
 3. SOPORTE TÉCNICO (internet lento, caído, sin señal, router, etc.):
    → Pregunta: ¿tienes internet ahora o está totalmente caído? ¿La luz LOS/PON del router está roja?
