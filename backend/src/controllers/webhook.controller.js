@@ -422,20 +422,11 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 
       clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId };
 
-      // Obtener deuda real — pasar usuario y nombre para validar que las facturas
-      // pertenecen al cliente correcto (WispHub puede devolver facturas de otro cliente)
+      // Obtener deuda real — usar planPrice para encontrar la factura correcta del cliente
       try {
-        const debtInfo = await wisphub.consultarDeuda(clientId, {
-          usuario: wispClient.usuario || null,
-          nombre:  clientName,
-        });
-        clientInfo.debt_amount       = debtInfo.monto_deuda;
-        clientInfo.tiene_deuda       = debtInfo.tiene_deuda;
-        clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
-        // monto_mensual viene de las facturas validadas del cliente correcto
-        // Si no hay facturas válidas, usar precio_plan del objeto cliente como fallback
-        clientInfo.monto_mensual     = debtInfo.monto_mensual || planPrice || null;
-        clientInfo.periodos          = debtInfo.periodos;
+        const debtInfo = await wisphub.consultarDeuda(clientId, planPrice);
+        clientInfo.monto_mensual = debtInfo.monto_mensual || planPrice || null;
+        clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
       } catch {}
 
       logger.info('Cliente vinculado a WispHub', { phone, wispName: clientName, wisphub_id: clientId, plan: clientPlan, planPrice });
@@ -615,31 +606,21 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     if (conversation.client_id) {
       try {
         const ccRes = await query(
-          'SELECT name, plan, wisphub_id, service_status FROM clients WHERE id = $1',
+          'SELECT name, plan, wisphub_id, service_status, plan_price FROM clients WHERE id = $1',
           [conversation.client_id]
         );
         if (ccRes.rows.length) {
           const cc = ccRes.rows[0];
-          // Preferir display_name real; si es username, usar nombre de BD con misma validación
           const ccNameIsReal = cc.name && cc.name.includes(' ');
           const bestName = isRealName ? rawDisplayName : (ccNameIsReal ? cc.name : 'Cliente');
           clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id, service_status: cc.service_status };
           if (cc.wisphub_id) {
             try {
-              // Pasar nombre del cliente para validar facturas (evita recibir facturas de otro cliente)
-              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, { nombre: cc.name });
-              clientInfo.debt_amount       = debtInfo.monto_deuda;
-              clientInfo.tiene_deuda       = debtInfo.tiene_deuda;
-              clientInfo.cantidad_facturas = debtInfo.cantidad_facturas;
-              clientInfo.monto_mensual     = debtInfo.monto_mensual;
-              clientInfo.periodos          = debtInfo.periodos;
-              // Persistir deuda real en la tabla clients para que aparezca en el CRM sin que el cliente vuelva a escribir
-              if (debtInfo.monto_deuda != null) {
-                query(
-                  `UPDATE clients SET debt_amount = $1, updated_at = NOW() WHERE id = $2`,
-                  [debtInfo.monto_deuda, conversation.client_id]
-                ).catch(() => {});
-              }
+              // Pasar plan_price para que consultarDeuda encuentre la factura del cliente correcto
+              const planPrice = parseFloat(cc.plan_price) || null;
+              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, planPrice);
+              clientInfo.monto_mensual = debtInfo.monto_mensual;
+              clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
             } catch {}
           }
         }
