@@ -242,11 +242,15 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
     : '';
 
   const clientContext = clientName
-    ? `CLIENTE IDENTIFICADO (datos de WispHub):
+    ? `╔══════════════════════════════════════════╗
+║   DATOS EN TIEMPO REAL DEL SISTEMA       ║
+║   (ESTOS DATOS ANULAN CUALQUIER MONTO    ║
+║    MENCIONADO EN EL HISTORIAL)           ║
+╚══════════════════════════════════════════╝
 - Nombre: ${clientName}
 - Plan: ${clientPlan || 'no registrado'}
 - Estado del servicio: ${serviceStatusLabel}
-- Deuda: ${deudaTexto}${recentPaymentContext}`
+- Cuota mensual ACTUAL: ${deudaTexto}${recentPaymentContext}`
     : 'CLIENTE: no identificado en el sistema (puede ser número no registrado o nuevo)';
 
   const { getPaymentBlock } = require('../config/payment-info');
@@ -298,7 +302,8 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
    → NO menciones deuda ni servicio a menos que el cliente lo pregunte.
 
 2. CONSULTA DE CUOTA/PAGO (¿cuánto debo?, ¿mi cuota?, ¿cuánto es?):
-   → USA EXACTAMENTE los datos del bloque "Deuda:" de arriba. NUNCA inventes montos.
+   → USA EXACTAMENTE el valor de "Cuota mensual ACTUAL" del bloque de arriba. NUNCA uses montos del historial.
+   → Si el historial menciona un monto diferente, IGNÓRALO — el sistema ya actualizó los datos.
    → Responde SOLO con la cuota mensual: "Tu cuota mensual es S/ [monto]. Envíanos tu comprobante de pago."
    → NUNCA menciones deuda total, número de facturas acumuladas ni montos de meses anteriores.
    → Si el cliente pregunta por meses anteriores o deuda acumulada: "Para regularizar pagos anteriores comunícate con un asesor: *932258382*"
