@@ -566,4 +566,128 @@ const dbSummary = async (req, res) => {
   }
 };
 
-module.exports = { auditByPhone, auditByName, auditConversation, fixClientLink, dbSummary };
+// ─────────────────────────────────────────────────────────────
+// GET /api/audit/simulate?phone=51XXXXXXXXX
+// Simula qué vería el bot para ese cliente sin enviar WhatsApp
+// ─────────────────────────────────────────────────────────────
+const simulateBot = async (req, res) => {
+  const rawPhone = req.query.phone || '';
+  if (!rawPhone) {
+    return res.status(400).json({ success: false, message: 'Parámetro phone requerido' });
+  }
+
+  const result = {
+    phone: rawPhone,
+    timestamp: new Date().toISOString(),
+    crm_client: null,
+    wisphub_client: null,
+    deuda: null,
+    bot_preview: {},
+    warnings: [],
+  };
+
+  try {
+    // ── 1. Buscar en CRM (PostgreSQL) ──────────────────────
+    const variants = phoneVariants(rawPhone);
+    const crmRes = await query(
+      `SELECT cl.wisphub_id, cl.name, cl.plan, cl.plan_price, cl.service_status,
+              cl.nodo, cl.wisphub_plan_id, cl.phone AS client_phone,
+              c.display_name, c.status AS conv_status, c.client_id,
+              c.id AS conv_id
+       FROM conversations c
+       LEFT JOIN clients cl ON cl.id = c.client_id
+       WHERE c.phone = ANY($1::text[])
+       ORDER BY c.last_message_at DESC LIMIT 1`,
+      [variants]
+    );
+
+    if (crmRes.rows.length) {
+      const r = crmRes.rows[0];
+      result.crm_client = {
+        conv_id: r.conv_id,
+        display_name: r.display_name,
+        conv_status: r.conv_status,
+        wisphub_id: r.wisphub_id,
+        name: r.name,
+        plan: r.plan,
+        plan_price: r.plan_price,
+        service_status: r.service_status,
+        nodo: r.nodo,
+      };
+    }
+
+    // ── 2. Buscar en WispHub ───────────────────────────────
+    const digits9 = rawPhone.replace(/\D/g, '').replace(/^51/, '');
+    try {
+      const whClients = await wisphub.buscarClientePorTelefono(digits9);
+      if (whClients && whClients.length > 0) {
+        const wh = whClients[0];
+        result.wisphub_client = {
+          id_servicio: wh.id_servicio,
+          nombre: wh.nombre,
+          usuario: wh.usuario,
+          estado: wh.estado,
+          plan: wh.nombre_plan || wh.plan,
+          precio_plan: wh.precio_plan,
+          nodo: wh.nodo || wh.nombre_nodo,
+          celular: wh.celular,
+          telefono: wh.telefono,
+        };
+      }
+    } catch (e) {
+      result.warnings.push(`WispHub búsqueda falló: ${e.message}`);
+    }
+
+    // ── 3. Consultar deuda (lógica real del bot) ───────────
+    const wisphubId = result.crm_client?.wisphub_id || result.wisphub_client?.id_servicio;
+    const planPrice = parseFloat(result.crm_client?.plan_price || result.wisphub_client?.precio_plan || 0) || null;
+    const usuario   = result.wisphub_client?.usuario || null;
+
+    if (wisphubId) {
+      try {
+        result.deuda = await wisphub.consultarDeuda(wisphubId, planPrice, usuario);
+      } catch (e) {
+        result.warnings.push(`consultarDeuda falló: ${e.message}`);
+      }
+    } else {
+      result.warnings.push('No se encontró wisphub_id — cliente no vinculado');
+    }
+
+    // ── 4. Preview del mensaje que vería el cliente ────────
+    const nombre      = result.crm_client?.name || result.wisphub_client?.nombre || 'Cliente';
+    const cuota       = result.deuda?.monto_mensual || planPrice || 0;
+    const tienePendiente = result.deuda?.tiene_deuda;
+    const estado      = result.wisphub_client?.estado || result.crm_client?.service_status || 'desconocido';
+
+    result.bot_preview = {
+      nombre_que_ve_el_bot: nombre,
+      cuota_mensual_usada: cuota,
+      tiene_deuda_pendiente: tienePendiente,
+      estado_servicio: estado,
+      mensaje_bienvenida: `Hola ${nombre.split(' ')[0]}, soy el asistente de FiberPeru. ¿En qué te puedo ayudar?`,
+      mensaje_cuota: cuota > 0
+        ? `Tu cuota mensual es S/ ${parseFloat(cuota).toFixed(2)}.`
+        : 'No se pudo determinar la cuota mensual.',
+      monto_que_validara_el_bot: cuota > 0 ? `S/ ${parseFloat(cuota).toFixed(2)}` : 'DESCONOCIDO',
+    };
+
+    // ── 5. Detección de problemas ──────────────────────────
+    if (!result.crm_client?.wisphub_id) {
+      result.warnings.push('Conversacion NO vinculada a cliente WispHub');
+    }
+    if (result.crm_client?.plan_price && result.wisphub_client?.precio_plan) {
+      const dbPrice = parseFloat(result.crm_client.plan_price);
+      const whPrice = parseFloat(result.wisphub_client.precio_plan);
+      if (Math.abs(dbPrice - whPrice) > 0.5) {
+        result.warnings.push(`PLAN_PRICE_MISMATCH: BD tiene S/${dbPrice} pero WispHub dice S/${whPrice}`);
+      }
+    }
+
+    return res.json({ success: true, simulate: result });
+  } catch (err) {
+    logger.error('[AUDIT] simulateBot error', { error: err.message });
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { auditByPhone, auditByName, auditConversation, fixClientLink, dbSummary, simulateBot };
