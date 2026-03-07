@@ -336,7 +336,24 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
         }
       }
 
-      // Estrategia 2: fallback → factura de mayor ID
+      // Estrategia 2: si planPrice es conocido pero ninguna factura coincide,
+      // WispHub está devolviendo facturas de OTROS clientes (ignora id_servicio).
+      // Usar planPrice directamente — es más confiable que una factura ajena.
+      if (!facturaElegida && planPrice && planPrice > 0) {
+        logger.warn('WispHub: facturas API devuelve datos de otros clientes, usando plan_price como monto', {
+          clienteId, planPrice,
+          montosAPI: pendientes.slice(0, 5).map(f => parseFloat(f.total || f.sub_total || f.monto || 0)),
+        });
+        return {
+          tiene_deuda:   true,
+          monto_deuda:   planPrice,
+          monto_mensual: planPrice,
+          factura_id:    null,
+          facturas:      [],
+        };
+      }
+
+      // Estrategia 3: fallback final → factura de mayor ID (planPrice desconocido)
       if (!facturaElegida) {
         facturaElegida = pendientes[0];
         logger.info('WispHub factura mas reciente seleccionada (fallback por ID)', {
