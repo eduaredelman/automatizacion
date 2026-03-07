@@ -422,9 +422,9 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 
       clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId };
 
-      // Obtener deuda real — usar planPrice para encontrar la factura correcta del cliente
+      // Obtener deuda real — usuario de WispHub identifica las facturas del cliente
       try {
-        const debtInfo = await wisphub.consultarDeuda(clientId, planPrice);
+        const debtInfo = await wisphub.consultarDeuda(clientId, planPrice, wispClient.usuario || null);
         clientInfo.monto_mensual = debtInfo.monto_mensual || planPrice || null;
         clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
       } catch {}
@@ -606,7 +606,7 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
     if (conversation.client_id) {
       try {
         const ccRes = await query(
-          'SELECT name, plan, wisphub_id, service_status, plan_price FROM clients WHERE id = $1',
+          "SELECT name, plan, wisphub_id, service_status, plan_price, wisphub_raw->>'usuario' as wisphub_usuario FROM clients WHERE id = $1",
           [conversation.client_id]
         );
         if (ccRes.rows.length) {
@@ -616,9 +616,9 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id, service_status: cc.service_status };
           if (cc.wisphub_id) {
             try {
-              // Pasar plan_price para que consultarDeuda encuentre la factura del cliente correcto
               const planPrice = parseFloat(cc.plan_price) || null;
-              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, planPrice);
+              const wisphubUsuario = cc.wisphub_usuario || null;
+              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, planPrice, wisphubUsuario);
               clientInfo.monto_mensual = debtInfo.monto_mensual;
               clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
             } catch {}

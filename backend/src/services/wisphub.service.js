@@ -221,7 +221,9 @@ const obtenerClientesConDeuda = async () => {
 
 // planPrice: precio del plan del cliente en BD local (para filtrar la factura correcta,
 // ya que WispHub puede devolver facturas de otros clientes con montos distintos)
-const consultarDeuda = async (clienteId, planPrice = null) => {
+// clientUsuario: campo 'usuario' de WispHub (único por cliente, ej: "pmorales@fiber-fix-sac")
+// Es el identificador más confiable para filtrar facturas de un cliente específico.
+const consultarDeuda = async (clienteId, planPrice = null, clientUsuario = null) => {
 
   // Todas las variantes posibles de estado pendiente en WispHub
   const estadosPendientes = new Set([
@@ -237,24 +239,43 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
   try {
     let pendientes = [];
 
-    const statusFilters = [
-      'Pendiente', 'pendiente',
-      'Pendiente de Pago', 'pendiente de pago',
-      'Vencida', 'vencida',
-      'No Pagada', 'no pagada',
-      'Por Pagar',
-    ];
-    for (const estado of statusFilters) {
+    // ─── ESTRATEGIA 1: filtrar por usuario (identificador único del cliente) ──
+    // Si WispHub soporta filtro por usuario, obtenemos directamente las facturas
+    // de este cliente sin mezcla de otros.
+    if (clientUsuario) {
       try {
         const { data } = await withRetry(() =>
-          http.get('/facturas/', { params: { id_servicio: clienteId, estado, limit: 20 } })
+          http.get('/facturas/', { params: { usuario: clientUsuario, estado: 'Pendiente de Pago', limit: 50 } })
         );
         const rows = data.results || data || [];
         if (Array.isArray(rows) && rows.length > 0) {
-          pendientes.push(...rows);
-          logger.info(`WispHub facturas por estado "${estado}"`, { clienteId, count: rows.length });
+          pendientes = rows;
+          logger.info('WispHub facturas filtradas por usuario', { clienteId, clientUsuario, count: rows.length });
         }
-      } catch { /* continúa con el siguiente estado */ }
+      } catch { /* continúa con fallback */ }
+    }
+
+    // ─── ESTRATEGIA 2: filtrar por estado (fallback si usuario no funcionó) ──
+    if (pendientes.length === 0) {
+      const statusFilters = [
+        'Pendiente', 'pendiente',
+        'Pendiente de Pago', 'pendiente de pago',
+        'Vencida', 'vencida',
+        'No Pagada', 'no pagada',
+        'Por Pagar',
+      ];
+      for (const estado of statusFilters) {
+        try {
+          const { data } = await withRetry(() =>
+            http.get('/facturas/', { params: { id_servicio: clienteId, estado, limit: 20 } })
+          );
+          const rows = data.results || data || [];
+          if (Array.isArray(rows) && rows.length > 0) {
+            pendientes.push(...rows);
+            logger.info(`WispHub facturas por estado "${estado}"`, { clienteId, count: rows.length });
+          }
+        } catch { /* continúa con el siguiente estado */ }
+      }
     }
 
     // Deduplicar por id
@@ -266,7 +287,7 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
       return true;
     });
 
-    // Si no encontró nada con filtro de estado, traer todas y filtrar localmente
+    // ─── ESTRATEGIA 3: traer todas y filtrar localmente ──────────────────────
     if (pendientes.length === 0) {
       const { data } = await withRetry(() =>
         http.get('/facturas/', { params: { id_servicio: clienteId, limit: 100 } })
@@ -284,7 +305,24 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
       });
     }
 
-    // ─── VALIDAR por id_servicio si WispHub lo incluye en la respuesta ──────
+    // ─── FILTRAR por usuario en la respuesta (si las facturas incluyen el campo) ──
+    // El campo 'usuario' en la factura identifica al cliente dueño de esa factura.
+    if (clientUsuario && pendientes.length > 0) {
+      const porUsuario = pendientes.filter(f => {
+        const fUsuario = f.usuario || f.usuario_wisphub || '';
+        return fUsuario === clientUsuario;
+      });
+      if (porUsuario.length > 0) {
+        if (porUsuario.length < pendientes.length) {
+          logger.info('WispHub: facturas filtradas por usuario (campo en factura)', {
+            clienteId, clientUsuario, original: pendientes.length, filtradas: porUsuario.length,
+          });
+        }
+        pendientes = porUsuario;
+      }
+    }
+
+    // ─── FILTRAR por id_servicio si WispHub lo incluye en la respuesta ──────
     if (pendientes.length > 0) {
       const conId = pendientes.filter(f => {
         const facServiceId = String(f.cliente?.id_servicio || f.id_servicio || '');
@@ -300,12 +338,7 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
       }
     }
 
-    // ─── SELECCIONAR LA FACTURA CORRECTA DEL CLIENTE ────────────────────────
-    // WispHub puede devolver facturas de otros clientes porque su API ignora
-    // el filtro id_servicio. Estrategia:
-    //   1. Si conocemos el plan_price del cliente (de la BD local), buscar la
-    //      factura cuyo total coincida con ese monto → es la del cliente.
-    //   2. Si no hay coincidencia de monto, usar la de mayor ID (más reciente).
+    // ─── SELECCIONAR LA FACTURA MÁS RECIENTE DEL CLIENTE ────────────────────
     if (pendientes.length > 0) {
       // Ordenar por id_factura desc (más reciente primero)
       pendientes.sort((a, b) => {
@@ -316,8 +349,20 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
 
       let facturaElegida = null;
 
-      // Estrategia 1: coincidir con plan_price conocido
-      if (planPrice && planPrice > 0) {
+      // Si tenemos facturas filtradas por usuario, la más reciente es la correcta
+      if (clientUsuario) {
+        facturaElegida = pendientes[0];
+        if (facturaElegida) {
+          logger.info('WispHub factura seleccionada (filtrada por usuario)', {
+            clienteId, clientUsuario,
+            facturaId: facturaElegida.id_factura || facturaElegida.id,
+            monto: parseFloat(facturaElegida.total || facturaElegida.sub_total || facturaElegida.monto || 0),
+          });
+        }
+      }
+
+      // Sin usuario: intentar coincidir con plan_price
+      if (!facturaElegida && planPrice && planPrice > 0) {
         facturaElegida = pendientes.find(f => {
           const fMonto = parseFloat(f.total || f.sub_total || f.monto || 0);
           return Math.abs(fMonto - planPrice) <= 0.51;
@@ -336,11 +381,9 @@ const consultarDeuda = async (clienteId, planPrice = null) => {
         }
       }
 
-      // Estrategia 2: si planPrice es conocido pero ninguna factura coincide,
-      // WispHub está devolviendo facturas de OTROS clientes (ignora id_servicio).
-      // Usar planPrice directamente — es más confiable que una factura ajena.
+      // Si planPrice es conocido pero no hay factura identificable, usar planPrice directamente
       if (!facturaElegida && planPrice && planPrice > 0) {
-        logger.warn('WispHub: facturas API devuelve datos de otros clientes, usando plan_price como monto', {
+        logger.warn('WispHub: no se puede identificar factura del cliente, usando plan_price como monto', {
           clienteId, planPrice,
           montosAPI: pendientes.slice(0, 5).map(f => parseFloat(f.total || f.sub_total || f.monto || 0)),
         });
@@ -505,10 +548,11 @@ const registrarPago = async (clienteId, paymentData) => {
   let facturaId = paymentData.facturaId || null;
 
   if (!facturaId) {
-    // Fallback: buscar factura pendiente. CRÍTICO: WispHub ignora el filtro id_servicio,
-    // por eso usamos consultarDeuda que ya tiene la lógica de validación correcta.
+    // Fallback: buscar factura usando el monto y usuario del cliente para identificar la factura correcta
+    const fallbackPlanPrice = paymentData.amount ? parseFloat(paymentData.amount) : null;
+    const fallbackUsuario   = paymentData.clientUsuario || null;
     try {
-      const debtInfo = await consultarDeuda(clienteId);
+      const debtInfo = await consultarDeuda(clienteId, fallbackPlanPrice, fallbackUsuario);
       if (debtInfo.factura_id) {
         facturaId = debtInfo.factura_id;
         logger.info('WispHub: factura pendiente obtenida via consultarDeuda', { clienteId, facturaId });

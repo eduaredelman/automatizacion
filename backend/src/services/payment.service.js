@@ -133,15 +133,17 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
     // WispHub puede devolver facturas de otros clientes; el plan_price permite identificar
     // la factura que realmente pertenece a este cliente.
     let planPrice = null;
+    let wisphubUsuario = null;
     try {
       const planRow = await query(
-        'SELECT plan_price FROM clients WHERE wisphub_id = $1',
+        "SELECT plan_price, wisphub_raw->>'usuario' as wisphub_usuario FROM clients WHERE wisphub_id = $1",
         [String(clientId)]
       );
       planPrice = parseFloat(planRow.rows[0]?.plan_price) || null;
+      wisphubUsuario = planRow.rows[0]?.wisphub_usuario || null;
     } catch {}
 
-    const debtInfo = await wisphub.consultarDeuda(clientId, planPrice);
+    const debtInfo = await wisphub.consultarDeuda(clientId, planPrice, wisphubUsuario);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
     logger.info('Debt info', {
@@ -185,6 +187,7 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
         method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
         operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
         facturaId: debtInfo.factura_id || null,
+        clientUsuario: wisphubUsuario,
       });
     } catch (regErr) {
       logger.warn('WispHub registrarPago falló (no fatal)', {
