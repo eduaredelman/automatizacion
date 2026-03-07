@@ -546,7 +546,7 @@ const processPendingPayment = async (conversation, phone, paymentId) => {
   await whatsapp.sendTextMessage(phone, responseText);
   await saveOutboundMessage(conversation.id, responseText, 'bot');
 
-  if (['manual_review', 'error', 'client_not_found', 'old_debt_only'].includes(result.status)) {
+  if (['manual_review', 'error', 'client_not_found', 'old_debt_only', 'fraud_detected'].includes(result.status)) {
     await escalateToHuman(conversation, `Pago requiere revisión: ${result.status}`);
   }
   await logEvent(conversation.id, paymentId, 'payment_processed', result.status);
@@ -778,7 +778,7 @@ const buildPaymentResponse = (result) => {
       const motivo = aiData?.futureDateFound
         ? `fecha futura (${fechaVoucher})`
         : `año ${año} en el comprobante`;
-      return `⏳ Estamos demorando un poco en procesar tu pago. El administrador revisará tu comprobante y te confirmará pronto. 😊`;
+      return `👨‍💼 Te voy a conectar con un asesor para que revise tu comprobante manualmente. Un momento por favor... ⏳`;
     }
 
     case 'amount_mismatch': {
