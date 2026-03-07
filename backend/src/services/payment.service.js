@@ -199,20 +199,27 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
     }
 
     // Marcar factura como pagada (SIEMPRE que haya factura_id — este endpoint sí funciona)
+    let marcadoExitoso = false;
     if (debtInfo.factura_id) {
-      await wisphub.marcarFacturaPagada(debtInfo.factura_id, {
-        amount: aiVisionData.amount,
-        date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
-        method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
-        operationCode: aiVisionData.operationCode,
-      }).catch(err => {
+      try {
+        await wisphub.marcarFacturaPagada(debtInfo.factura_id, {
+          amount: aiVisionData.amount,
+          date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
+          method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
+          operationCode: aiVisionData.operationCode,
+        });
+        marcadoExitoso = true;
+      } catch (err) {
         logger.warn('Could not mark invoice paid', { facturaId: debtInfo.factura_id, err: err.message });
-      });
+      }
     }
+
+    // Registrado en WispHub si cualquiera de los dos métodos tuvo éxito
+    const registradoEnWisphub = !!wispResult || marcadoExitoso;
 
     await updatePayment({
       status: 'validated',
-      registered_wisphub: !!wispResult,
+      registered_wisphub: registradoEnWisphub,
       wisphub_payment_id: String(wispResult?.id || ''),
       factura_id: String(debtInfo.factura_id || ''),
       validated_at: new Date().toISOString(),
