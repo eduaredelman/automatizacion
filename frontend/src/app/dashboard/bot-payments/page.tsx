@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import api from '@/lib/api';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { Download, Eye, RefreshCw, DollarSign, FileCheck } from 'lucide-react';
+import { Download, Eye, RefreshCw, DollarSign, FileCheck, Wifi } from 'lucide-react';
 import clsx from 'clsx';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
@@ -53,6 +53,8 @@ export default function BotPaymentsPage() {
   const [total, setTotal] = useState(0);
   const [totalAmount, setTotalAmount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
 
   const currentYear = now.getFullYear();
@@ -73,6 +75,20 @@ export default function BotPaymentsPage() {
   }, [mes, ano]);
 
   useEffect(() => { fetchPayments(); }, [fetchPayments]);
+
+  const handleReconcile = async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const { data } = await api.reconcileBotPayments();
+      setSyncResult(data.message ?? 'Sincronización completada.');
+      if (data.updated > 0) fetchPayments();
+    } catch {
+      setSyncResult('Error al sincronizar con WispHub.');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const mesNombre = MESES.find(m => m.value === mes)?.label ?? '';
 
@@ -124,6 +140,16 @@ export default function BotPaymentsPage() {
           </select>
 
           <button
+            onClick={handleReconcile}
+            disabled={syncing}
+            title="Verificar en WispHub cuáles pagos ya están registrados"
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/50 transition-all text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Wifi className={clsx('w-4 h-4', syncing && 'animate-pulse')} />
+            <span className="hidden sm:inline">{syncing ? 'Sincronizando...' : 'Sync WispHub'}</span>
+          </button>
+
+          <button
             onClick={fetchPayments}
             className="p-2 rounded-xl bg-slate-800/60 border border-slate-700/50 text-slate-400 hover:text-white hover:border-slate-600 transition-all"
           >
@@ -131,6 +157,14 @@ export default function BotPaymentsPage() {
           </button>
         </div>
       </div>
+
+      {/* Sync result banner */}
+      {syncResult && (
+        <div className="mx-6 mt-2 px-4 py-2 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-300 text-sm flex items-center justify-between">
+          <span>{syncResult}</span>
+          <button onClick={() => setSyncResult(null)} className="text-blue-400 hover:text-white ml-4 text-lg leading-none">×</button>
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="px-6 py-4 grid grid-cols-2 gap-4">

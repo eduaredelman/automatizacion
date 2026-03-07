@@ -96,6 +96,8 @@ export const api = {
   // Bot Payments
   getBotPayments: (params?: Record<string, unknown>) =>
     getApi().get('/bot-payments', { params }),
+  reconcileBotPayments: () =>
+    getApi().post('/bot-payments/reconcile', {}),
 };
 
 export default api;

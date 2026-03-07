@@ -779,6 +779,66 @@ const sincronizarContactos = async (db) => {
   return { total: clientes.length, created, updated, errors, linked };
 };
 
+// ─────────────────────────────────────────────────────────────
+// BUSCAR FACTURAS PAGADAS DE UN CLIENTE (para reconciliación)
+// ─────────────────────────────────────────────────────────────
+// Devuelve facturas con estado "Pagada" para el usuario WispHub dado.
+// Si clientUsuario es null, intenta por id_servicio.
+const buscarFacturasPagadas = async (clienteId, clientUsuario = null) => {
+  const estadosPagados = new Set([
+    'Pagada', 'pagada', 'PAGADA', 'Pagado', 'pagado', 'PAGADO',
+    'Cobrada', 'cobrada', 'Cobrado', 'cobrado',
+    'Completada', 'completada', 'Completado', 'completado',
+  ]);
+
+  try {
+    let facturas = [];
+
+    // Estrategia 1: filtrar por usuario + estado Pagada
+    if (clientUsuario) {
+      try {
+        const { data } = await withRetry(() =>
+          http.get('/facturas/', { params: { usuario: clientUsuario, estado: 'Pagada', limit: 100 } })
+        );
+        const rows = data.results || data || [];
+        if (Array.isArray(rows) && rows.length > 0) {
+          facturas = rows.filter(f => estadosPagados.has(f.estado || ''));
+          logger.info('WispHub facturas pagadas por usuario', { clienteId, clientUsuario, count: facturas.length });
+        }
+      } catch { /* continúa */ }
+    }
+
+    // Estrategia 2: filtrar por id_servicio + estado
+    if (facturas.length === 0) {
+      try {
+        const { data } = await withRetry(() =>
+          http.get('/facturas/', { params: { id_servicio: clienteId, estado: 'Pagada', limit: 100 } })
+        );
+        const rows = data.results || data || [];
+        if (Array.isArray(rows) && rows.length > 0) {
+          facturas = rows.filter(f => estadosPagados.has(f.estado || ''));
+        }
+      } catch { /* continúa */ }
+    }
+
+    // Estrategia 3: traer todas y filtrar localmente por usuario
+    if (facturas.length === 0 && clientUsuario) {
+      try {
+        const { data } = await withRetry(() =>
+          http.get('/facturas/', { params: { usuario: clientUsuario, limit: 100 } })
+        );
+        const rows = data.results || data || [];
+        facturas = rows.filter(f => estadosPagados.has(f.estado || ''));
+      } catch { /* continúa */ }
+    }
+
+    return facturas;
+  } catch (err) {
+    logger.warn('WispHub buscarFacturasPagadas error', { clienteId, error: err.message });
+    return [];
+  }
+};
+
 module.exports = {
   buscarCliente,
   buscarClientePorTelefono,
@@ -791,5 +851,6 @@ module.exports = {
   cortarServicio,
   obtenerTelefonoCliente,
   sincronizarContactos,
+  buscarFacturasPagadas,
   obtenerFormasPago: _obtenerFormasPago,
 };
