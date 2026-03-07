@@ -177,6 +177,14 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
       wisphubUsuario = planRow.rows[0]?.wisphub_usuario || null;
     } catch {}
 
+    // Vincular pago al cliente en DB local
+    try {
+      const clientRow = await query('SELECT id FROM clients WHERE wisphub_id = $1', [String(clientId)]);
+      if (clientRow.rows.length) {
+        await query('UPDATE payments SET client_id = $1 WHERE id = $2', [clientRow.rows[0].id, paymentId]);
+      }
+    } catch {}
+
     const debtInfo = await wisphub.consultarDeuda(clientId, planPrice, wisphubUsuario);
     await updatePayment({ debt_amount: debtInfo.monto_deuda });
 
@@ -217,7 +225,7 @@ const finalizePendingVoucher = async (paymentId, clientPhone, wisphubClientId = 
     try {
       wispResult = await wisphub.registrarPago(clientId, {
         amount: aiVisionData.amount,
-        date: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
+        paymentDate: aiVisionData.paymentDate || new Date().toISOString().split('T')[0],
         method: aiVisionData.paymentMethod !== 'unknown' ? aiVisionData.paymentMethod : 'transferencia',
         operationCode: aiVisionData.operationCode || `AUTO-${Date.now()}`,
         facturaId: debtInfo.factura_id || null,

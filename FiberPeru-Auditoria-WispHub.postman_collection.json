@@ -1,0 +1,928 @@
+{
+  "info": {
+    "_postman_id": "fiberperu-wisphub-audit-v1",
+    "name": "FiberPeru - Auditoria WispHub CRM",
+    "description": "Auditoria completa para detectar vinculaciones incorrectas, montos erroneos y pagos mal asignados entre WispHub y el CRM FiberPeru.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "WISPHUB_URL",    "value": "https://api.wisphub.app/api",             "type": "string" },
+    { "key": "WISPHUB_TOKEN",  "value": "Aef4xvDp.KBX6PKTl3qRMRLVj41dZGeys1ZGGOyTz", "type": "string" },
+    { "key": "BACKEND_URL",    "value": "http://localhost:3001",                    "type": "string" },
+    { "key": "CRM_TOKEN",      "value": "",                                         "type": "string" },
+    { "key": "PHONE_AUDIT",    "value": "51XXXXXXXXX",                              "type": "string", "description": "Telefono del cliente a auditar (formato 51XXXXXXXXX)" },
+    { "key": "PHONE_9DIGITS",  "value": "XXXXXXXXX",                               "type": "string", "description": "Telefono sin prefijo 51 (9 digitos)" },
+    { "key": "WISPHUB_CLIENT_ID", "value": "",                                      "type": "string", "description": "Se llena automaticamente con los tests" },
+    { "key": "WISPHUB_USUARIO",   "value": "",                                      "type": "string" },
+    { "key": "CONVERSATION_ID",   "value": "",                                      "type": "string", "description": "UUID de la conversacion a auditar" }
+  ],
+  "item": [
+
+    {
+      "name": "0. CRM - Login (obtener token)",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.token) {",
+                  "  pm.collectionVariables.set('CRM_TOKEN', r.token);",
+                  "  console.log('Token guardado:', r.token.substring(0,30) + '...');",
+                  "} else {",
+                  "  console.error('Login fallido:', JSON.stringify(r));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{BACKEND_URL}}/api/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@fiberperu.com\",\n  \"password\": \"admin123\"\n}"
+            },
+            "description": "Obtener JWT token para acceder a los endpoints del CRM. Ajustar email/password segun tu usuario."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "1. WispHub - Buscar cliente por telefono",
+      "item": [
+        {
+          "name": "1a. Buscar por celular (sin prefijo 51)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('Total resultados:', results.length);",
+                  "if (results.length > 0) {",
+                  "  const c = results[0];",
+                  "  pm.collectionVariables.set('WISPHUB_CLIENT_ID', String(c.id_servicio || c.id || ''));",
+                  "  pm.collectionVariables.set('WISPHUB_USUARIO', String(c.usuario || ''));",
+                  "  console.log('=== CLIENTE ENCONTRADO ===');",
+                  "  console.log('ID Servicio:', c.id_servicio || c.id);",
+                  "  console.log('Nombre:', c.nombre || c.nombre_completo);",
+                  "  console.log('Celular:', c.celular);",
+                  "  console.log('Telefono:', c.telefono);",
+                  "  console.log('Movil:', c.movil);",
+                  "  console.log('Plan:', c.plan || c.plan_nombre);",
+                  "  console.log('Usuario WispHub:', c.usuario);",
+                  "  console.log('Estado:', c.estado || c.activo);",
+                  "  console.log('Todos los campos:', Object.keys(c).join(', '));",
+                  "  console.log('Campos de precio:', {",
+                  "    precio_plan: c.precio_plan,",
+                  "    monto_plan: c.monto_plan,",
+                  "    precio: c.precio,",
+                  "    costo: c.costo,",
+                  "    valor: c.valor,",
+                  "    monto: c.monto",
+                  "  });",
+                  "  pm.test('Cliente encontrado', () => pm.expect(results.length).to.be.above(0));",
+                  "  pm.test('Telefono coincide', () => {",
+                  "    const phone9 = pm.collectionVariables.get('PHONE_9DIGITS');",
+                  "    const celular = String(c.celular || '').replace(/\\D/g, '');",
+                  "    pm.expect(celular).to.include(phone9);",
+                  "  });",
+                  "} else {",
+                  "  console.warn('ADVERTENCIA: No se encontro cliente para este telefono');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?celular={{PHONE_9DIGITS}}&limit=5",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [
+                { "key": "celular", "value": "{{PHONE_9DIGITS}}" },
+                { "key": "limit", "value": "5" }
+              ]
+            },
+            "description": "Buscar cliente por celular SIN prefijo 51 (9 digitos). CAMBIAR PHONE_9DIGITS en las variables."
+          }
+        },
+        {
+          "name": "1b. Buscar por celular (con prefijo 51)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('Resultados con prefijo 51:', results.length);",
+                  "if (results.length > 0) {",
+                  "  const c = results[0];",
+                  "  console.log('ID:', c.id_servicio || c.id, '| Nombre:', c.nombre, '| Celular:', c.celular);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?celular={{PHONE_AUDIT}}&limit=5",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [
+                { "key": "celular", "value": "{{PHONE_AUDIT}}" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1c. Buscar por campo telefono",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('Resultados campo telefono:', results.length);",
+                  "results.forEach(c => console.log('ID:', c.id_servicio || c.id, '| Nombre:', c.nombre, '| Tel:', c.telefono));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?telefono={{PHONE_9DIGITS}}&limit=5",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [
+                { "key": "telefono", "value": "{{PHONE_9DIGITS}}" },
+                { "key": "limit", "value": "5" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "1d. Buscar por nombre - Marcela (cliente en CRM)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== BUSQUEDA POR NOMBRE: Marcela ===');",
+                  "results.forEach(c => {",
+                  "  console.log('ID:', c.id_servicio || c.id);",
+                  "  console.log('Nombre:', c.nombre || c.nombre_completo);",
+                  "  console.log('Celular:', c.celular, '| Tel:', c.telefono, '| Movil:', c.movil);",
+                  "  console.log('---');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?search=Marcela&limit=10",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [
+                { "key": "search", "value": "Marcela" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Buscar el cliente que aparece en el CRM. Cambiar 'Marcela' por el nombre que ves en el chat."
+          }
+        },
+        {
+          "name": "1e. Buscar por nombre - Mathias (cliente real del pago)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== BUSQUEDA POR NOMBRE: Mathias ===');",
+                  "results.forEach(c => {",
+                  "  console.log('ID:', c.id_servicio || c.id);",
+                  "  console.log('Nombre:', c.nombre || c.nombre_completo);",
+                  "  console.log('Celular:', c.celular, '| Tel:', c.telefono);",
+                  "  console.log('Plan:', c.plan || c.plan_nombre, '| Precio:', c.precio_plan || c.precio || c.monto);",
+                  "  console.log('---');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?search=Mathias&limit=10",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [
+                { "key": "search", "value": "Mathias" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Buscar el cliente que el pagador dice ser."
+          }
+        },
+        {
+          "name": "1f. Obtener detalle de cliente por ID Servicio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "console.log('=== DETALLE CLIENTE ===');",
+                  "console.log('Objeto completo:', JSON.stringify(r, null, 2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/{{WISPHUB_CLIENT_ID}}/",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", "{{WISPHUB_CLIENT_ID}}", ""]
+            },
+            "description": "Ver todos los campos del cliente. WISPHUB_CLIENT_ID se llena automaticamente del paso 1a."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "2. WispHub - Facturas del cliente",
+      "item": [
+        {
+          "name": "2a. Facturas pendientes por id_servicio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const facturas = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== FACTURAS PENDIENTES ===');",
+                  "console.log('Total:', facturas.length);",
+                  "facturas.forEach((f, i) => {",
+                  "  console.log(`Factura ${i+1}:`);",
+                  "  console.log('  ID:', f.id_factura || f.id);",
+                  "  console.log('  Estado:', f.estado);",
+                  "  console.log('  Monto total:', f.total || f.sub_total || f.monto);",
+                  "  console.log('  Fecha venc:', f.fecha_vencimiento);",
+                  "  console.log('  Usuario:', f.usuario);",
+                  "  console.log('  ID Servicio en factura:', f.cliente?.id_servicio || f.id_servicio);",
+                  "  console.log('  Cliente nombre:', f.cliente?.nombre || f.cliente_nombre);",
+                  "  console.log('  Todos los campos:', Object.keys(f).join(', '));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/facturas/?id_servicio={{WISPHUB_CLIENT_ID}}&estado=Pendiente de Pago&limit=50",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["facturas", ""],
+              "query": [
+                { "key": "id_servicio", "value": "{{WISPHUB_CLIENT_ID}}" },
+                { "key": "estado", "value": "Pendiente de Pago" },
+                { "key": "limit", "value": "50" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2b. Facturas pendientes por usuario WispHub",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const facturas = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== FACTURAS POR USUARIO ===');",
+                  "console.log('Total:', facturas.length);",
+                  "facturas.forEach((f, i) => {",
+                  "  const monto = parseFloat(f.total || f.sub_total || f.monto || 0);",
+                  "  console.log(`Factura ${i+1}: ID=${f.id_factura || f.id} | Estado=${f.estado} | Monto=S/${monto} | Vence=${f.fecha_vencimiento}`);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/facturas/?usuario={{WISPHUB_USUARIO}}&estado=Pendiente de Pago&limit=50",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["facturas", ""],
+              "query": [
+                { "key": "usuario", "value": "{{WISPHUB_USUARIO}}" },
+                { "key": "estado", "value": "Pendiente de Pago" },
+                { "key": "limit", "value": "50" }
+              ]
+            },
+            "description": "Buscar facturas usando el campo 'usuario' de WispHub (mas confiable que id_servicio)."
+          }
+        },
+        {
+          "name": "2c. TODAS las facturas del cliente (todos los estados)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const facturas = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== TODAS LAS FACTURAS ===');",
+                  "console.log('Total:', facturas.length);",
+                  "",
+                  "// Agrupar por estado",
+                  "const byEstado = {};",
+                  "facturas.forEach(f => {",
+                  "  const e = f.estado || 'sin_estado';",
+                  "  byEstado[e] = (byEstado[e] || 0) + 1;",
+                  "});",
+                  "console.log('Por estado:', JSON.stringify(byEstado));",
+                  "",
+                  "// Montos unicos",
+                  "const montos = [...new Set(facturas.map(f => parseFloat(f.total || f.sub_total || f.monto || 0)))];",
+                  "console.log('Montos unicos en facturas:', montos.sort((a,b) => a-b));",
+                  "",
+                  "// Mostrar las 5 mas recientes",
+                  "facturas.slice(0,5).forEach((f, i) => {",
+                  "  console.log(`[${i+1}] ID=${f.id_factura || f.id} | ${f.estado} | S/${f.total || f.monto} | id_servicio=${f.cliente?.id_servicio || f.id_servicio}`);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/facturas/?id_servicio={{WISPHUB_CLIENT_ID}}&limit=100",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["facturas", ""],
+              "query": [
+                { "key": "id_servicio", "value": "{{WISPHUB_CLIENT_ID}}" },
+                { "key": "limit", "value": "100" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "2d. Facturas pagadas del cliente",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const facturas = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('Facturas pagadas:', facturas.length);",
+                  "facturas.slice(0,5).forEach(f => {",
+                  "  console.log('ID:', f.id_factura || f.id, '| Monto:', f.total || f.monto, '| Fecha pago:', f.fecha_pago);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/facturas/?id_servicio={{WISPHUB_CLIENT_ID}}&estado=Pagada&limit=20",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["facturas", ""],
+              "query": [
+                { "key": "id_servicio", "value": "{{WISPHUB_CLIENT_ID}}" },
+                { "key": "estado", "value": "Pagada" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "3. WispHub - Planes",
+      "item": [
+        {
+          "name": "3a. Listar todos los planes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const planes = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== PLANES WISPHUB ===');",
+                  "console.log('Total planes:', planes.length);",
+                  "planes.forEach(p => {",
+                  "  console.log(`ID=${p.id || p.id_plan} | ${p.nombre || p.name} | Precio=S/${p.precio || p.costo || p.monto} | Bajada=${p.velocidad_bajada || p.bajada}`);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/planes/?limit=100",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["planes", ""],
+              "query": [{ "key": "limit", "value": "100" }]
+            },
+            "description": "Obtener catalogo de planes. Si falla, probar: /planes-servicio/, /plan-servicio/, /tipos-plan/"
+          }
+        },
+        {
+          "name": "3b. Planes (endpoint alternativo)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": "{{WISPHUB_URL}}/planes-servicio/?limit=100"
+          }
+        },
+        {
+          "name": "3c. Planes (endpoint alternativo 2)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": "{{WISPHUB_URL}}/servicios/?limit=100"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "4. WispHub - Pagos registrados",
+      "item": [
+        {
+          "name": "4a. Pagos del cliente por id_servicio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const pagos = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== PAGOS REGISTRADOS EN WISPHUB ===');",
+                  "console.log('Total:', pagos.length);",
+                  "pagos.forEach((p, i) => {",
+                  "  console.log(`Pago ${i+1}:`);",
+                  "  console.log('  ID:', p.id);",
+                  "  console.log('  Monto:', p.monto || p.total_cobrado || p.total);",
+                  "  console.log('  Fecha:', p.fecha_pago || p.fecha);",
+                  "  console.log('  Metodo:', p.forma_pago || p.metodo_pago || p.metodo);",
+                  "  console.log('  Referencia:', p.referencia || p.codigo_operacion);",
+                  "  console.log('  Factura ID:', p.factura || p.id_factura || p.factura_id);",
+                  "  console.log('  Todos campos:', Object.keys(p).join(', '));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/pagos/?id_servicio={{WISPHUB_CLIENT_ID}}&limit=20",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["pagos", ""],
+              "query": [
+                { "key": "id_servicio", "value": "{{WISPHUB_CLIENT_ID}}" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Ver pagos registrados en WispHub para este cliente. Si /pagos/ da 404, probar /cobros/ o /historial-pagos/"
+          }
+        },
+        {
+          "name": "4b. Pagos por usuario",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/pagos/?usuario={{WISPHUB_USUARIO}}&limit=20",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["pagos", ""],
+              "query": [
+                { "key": "usuario", "value": "{{WISPHUB_USUARIO}}" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "4c. Endpoint alternativo cobros",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": "{{WISPHUB_URL}}/cobros/?id_servicio={{WISPHUB_CLIENT_ID}}&limit=20"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "5. CRM - Auditoria completa (backend)",
+      "item": [
+        {
+          "name": "5a. Resumen general de la BD",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.success) {",
+                  "  const s = r.summary;",
+                  "  console.log('=== RESUMEN BASE DE DATOS ===');",
+                  "  console.log('Conversaciones por estado:', JSON.stringify(s.conversations_by_status));",
+                  "  console.log('Clientes por estado servicio:', JSON.stringify(s.clients_by_service_status));",
+                  "  console.log('Pagos por estado:', JSON.stringify(s.payments_by_status));",
+                  "  console.log('ALERTAS:');",
+                  "  console.log('  Pagos SIN client_id:', s.orphan_payments_no_client_id);",
+                  "  console.log('  Conversaciones SIN client_id:', s.conversations_no_client_id);",
+                  "  console.log('  Clientes SIN plan_price:', s.clients_without_plan_price);",
+                  "  if (s.duplicate_phones_in_clients.length > 0) {",
+                  "    console.warn('  TELEFONOS DUPLICADOS:', JSON.stringify(s.duplicate_phones_in_clients));",
+                  "  } else {",
+                  "    console.log('  Telefonos duplicados: ninguno');",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": "{{BACKEND_URL}}/api/audit/db-summary"
+          }
+        },
+        {
+          "name": "5b. Auditoria cliente por telefono",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.success) {",
+                  "  const rep = r.report;",
+                  "  console.log('=== REPORTE DE AUDITORIA ===');",
+                  "  console.log('Telefono auditado:', rep.query_phone);",
+                  "  console.log('Variantes buscadas:', rep.phone_variants_checked.join(', '));",
+                  "  console.log('');",
+                  "  console.log('--- CRM (PostgreSQL) ---');",
+                  "  console.log('Conversaciones encontradas:', rep.crm.conversations?.length || 0);",
+                  "  console.log('Clientes en tabla clients:', rep.crm.clients?.length || 0);",
+                  "  if (rep.crm.conversations?.length > 0) {",
+                  "    const c = rep.crm.conversations[0];",
+                  "    console.log('  Conversacion principal:');",
+                  "    console.log('    display_name:', c.display_name);",
+                  "    console.log('    client_id:', c.client_id);",
+                  "    console.log('    wisphub_id (via client_id):', c.wisphub_id);",
+                  "    console.log('    client_name en clients:', c.client_name);",
+                  "    console.log('    plan_price:', c.plan_price);",
+                  "    console.log('    bot_intent:', c.bot_intent);",
+                  "  }",
+                  "  console.log('');",
+                  "  console.log('--- WispHub ---');",
+                  "  if (rep.wisphub.client_by_phone) {",
+                  "    const w = rep.wisphub;",
+                  "    console.log('  Cliente en WispHub:', w.client_name);",
+                  "    console.log('  ID Servicio:', w.client_id);",
+                  "    console.log('  Celular WispHub:', w.client_phone_celular);",
+                  "    console.log('  Campos de precio:', JSON.stringify(w.plan_price_fields));",
+                  "    if (w.debt_info) {",
+                  "      console.log('  Deuda:');",
+                  "      console.log('    tiene_deuda:', w.debt_info.tiene_deuda);",
+                  "      console.log('    monto_mensual (cuota real):', w.debt_info.monto_mensual);",
+                  "      console.log('    monto_deuda (total facturas):', w.debt_info.monto_deuda);",
+                  "      console.log('    cantidad_facturas:', w.debt_info.cantidad_facturas);",
+                  "      console.log('    facturas muestra:', JSON.stringify(w.debt_info.facturas_sample));",
+                  "    }",
+                  "  } else {",
+                  "    console.warn('  CLIENTE NO ENCONTRADO EN WISPHUB');",
+                  "  }",
+                  "  console.log('');",
+                  "  console.log('--- INCONSISTENCIAS ---');",
+                  "  console.log('Total problemas:', rep.summary.total_issues);",
+                  "  console.log('Criticos:', rep.summary.critical);",
+                  "  console.log('Altos:', rep.summary.high);",
+                  "  rep.inconsistencies.forEach((inc, i) => {",
+                  "    console.log(`  [${inc.gravedad}] ${inc.tipo}: ${inc.detalle}`);",
+                  "  });",
+                  "  console.log('');",
+                  "  console.log('--- RECOMENDACIONES ---');",
+                  "  rep.recommendations.forEach((r, i) => console.log(`  ${i+1}. ${r}`));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": {
+              "raw": "{{BACKEND_URL}}/api/audit/client?phone={{PHONE_AUDIT}}",
+              "host": ["{{BACKEND_URL}}"],
+              "path": ["api", "audit", "client"],
+              "query": [{ "key": "phone", "value": "{{PHONE_AUDIT}}" }]
+            },
+            "description": "Auditoria completa: cruza datos WispHub con PostgreSQL y detecta todas las inconsistencias."
+          }
+        },
+        {
+          "name": "5c. Buscar cliente por nombre - Marcela",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.success) {",
+                  "  console.log('=== BUSQUEDA POR NOMBRE: Marcela ===');",
+                  "  console.log('WispHub:', JSON.stringify(r.result.wisphub, null, 2));",
+                  "  console.log('CRM DB:', JSON.stringify(r.result.crm, null, 2));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": {
+              "raw": "{{BACKEND_URL}}/api/audit/client-name?name=Marcela",
+              "host": ["{{BACKEND_URL}}"],
+              "path": ["api", "audit", "client-name"],
+              "query": [{ "key": "name", "value": "Marcela" }]
+            }
+          }
+        },
+        {
+          "name": "5d. Buscar cliente por nombre - Mathias",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.success) {",
+                  "  console.log('=== BUSQUEDA POR NOMBRE: Mathias ===');",
+                  "  if (r.result.wisphub) {",
+                  "    const w = r.result.wisphub;",
+                  "    console.log('WispHub encontro:');",
+                  "    console.log('  ID:', w.id_servicio);",
+                  "    console.log('  Nombre:', w.nombre);",
+                  "    console.log('  Celular:', w.celular);",
+                  "    console.log('  Plan:', w.plan, '| Precio:', w.precio_plan);",
+                  "  } else {",
+                  "    console.warn('Mathias NO encontrado en WispHub');",
+                  "  }",
+                  "  console.log('En CRM:', JSON.stringify(r.result.crm));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": {
+              "raw": "{{BACKEND_URL}}/api/audit/client-name?name=Mathias",
+              "host": ["{{BACKEND_URL}}"],
+              "path": ["api", "audit", "client-name"],
+              "query": [{ "key": "name", "value": "Mathias" }]
+            }
+          }
+        },
+        {
+          "name": "5e. Auditoria de conversacion especifica",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.success) {",
+                  "  const conv = r.conversation;",
+                  "  console.log('=== AUDITORIA DE CONVERSACION ===');",
+                  "  console.log('Phone:', conv.phone);",
+                  "  console.log('display_name (CRM):', conv.display_name);",
+                  "  console.log('wisphub_name (tabla clients):', conv.wisphub_name);",
+                  "  console.log('client_id vinculado:', conv.client_id);",
+                  "  console.log('wisphub_id via client_id:', conv.wisphub_id);",
+                  "  console.log('plan_price en CRM:', conv.plan_price);",
+                  "  console.log('bot_intent:', conv.bot_intent);",
+                  "  console.log('');",
+                  "  console.log('WispHub verificacion:', JSON.stringify(r.wisphub_verification, null, 2));",
+                  "  console.log('');",
+                  "  console.log('Pagos:', r.payments.length, 'pagos');",
+                  "  r.payments.forEach(p => {",
+                  "    console.log(`  [${p.status}] S/${p.amount} | client_id=${p.client_id} | client=${p.client_name} | op=${p.operation_code}`);",
+                  "  });",
+                  "  console.log('');",
+                  "  console.log('PROBLEMAS DETECTADOS:');",
+                  "  r.issues.forEach(i => console.log(' -', i));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": {
+              "raw": "{{BACKEND_URL}}/api/audit/conversation?id={{CONVERSATION_ID}}",
+              "host": ["{{BACKEND_URL}}"],
+              "path": ["api", "audit", "conversation"],
+              "query": [{ "key": "id", "value": "{{CONVERSATION_ID}}" }]
+            },
+            "description": "CONVERSATION_ID: pegar el UUID de la conversacion que aparece en el CRM (visible en la URL del chat)."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "6. CRM - Correcciones automaticas",
+      "item": [
+        {
+          "name": "6a. Corregir vinculacion de cliente por telefono",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "console.log('=== RESULTADO CORRECCION ===');",
+                  "if (r.success) {",
+                  "  console.log('Cliente WispHub real:', JSON.stringify(r.wisphub_client));",
+                  "  console.log('Correcciones aplicadas:');",
+                  "  r.fixes.forEach((f, i) => console.log(`  ${i+1}. ${f}`));",
+                  "} else {",
+                  "  console.error('Error:', r.message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": {
+              "raw": "{{BACKEND_URL}}/api/audit/fix-client?phone={{PHONE_AUDIT}}",
+              "host": ["{{BACKEND_URL}}"],
+              "path": ["api", "audit", "fix-client"],
+              "query": [{ "key": "phone", "value": "{{PHONE_AUDIT}}" }]
+            },
+            "description": "CORRECCION AUTOMATICA: Busca el cliente real en WispHub para ese telefono y re-vincula todas las conversaciones y pagos al cliente correcto. SOLO ejecutar despues de confirmar el problema con los pasos 1-5."
+          }
+        },
+        {
+          "name": "6b. Forzar re-sync WispHub (scheduler manual)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": "{{BACKEND_URL}}/api/scheduler/sync-now",
+            "description": "Fuerza sincronizacion inmediata de todos los contactos WispHub → PostgreSQL."
+          }
+        },
+        {
+          "name": "6c. Forzar re-sync solo planes",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{CRM_TOKEN}}" }],
+            "url": "{{BACKEND_URL}}/api/scheduler/status",
+            "description": "Ver estado del scheduler. Usar sync-now para sincronizar."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "7. WispHub - Explorar estructura API",
+      "item": [
+        {
+          "name": "7a. Ver formas de pago disponibles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const items = r.results || (Array.isArray(r) ? r : []);",
+                  "console.log('=== FORMAS DE PAGO WISPHUB ===');",
+                  "items.forEach(i => console.log(`ID=${i.id} | ${i.nombre || i.name || i.descripcion}`));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": "{{WISPHUB_URL}}/formas-de-pago/?limit=50"
+          }
+        },
+        {
+          "name": "7b. Estructura de un cliente (campos disponibles)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "if (results.length > 0) {",
+                  "  const c = results[0];",
+                  "  console.log('=== TODOS LOS CAMPOS DEL OBJETO CLIENTE ===');",
+                  "  Object.entries(c).forEach(([k, v]) => console.log(`  ${k}: ${JSON.stringify(v)}`));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/clientes/?limit=1",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["clientes", ""],
+              "query": [{ "key": "limit", "value": "1" }]
+            },
+            "description": "Ver todos los campos que devuelve WispHub para un cliente. Util para diagnosticar donde esta el precio del plan."
+          }
+        },
+        {
+          "name": "7c. Estructura de una factura (campos disponibles)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const r = pm.response.json();",
+                  "const results = r.results || (Array.isArray(r) ? r : []);",
+                  "if (results.length > 0) {",
+                  "  const f = results[0];",
+                  "  console.log('=== TODOS LOS CAMPOS DEL OBJETO FACTURA ===');",
+                  "  Object.entries(f).forEach(([k, v]) => console.log(`  ${k}: ${JSON.stringify(v)}`));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Api-Key {{WISPHUB_TOKEN}}" }],
+            "url": {
+              "raw": "{{WISPHUB_URL}}/facturas/?limit=1",
+              "host": ["{{WISPHUB_URL}}"],
+              "path": ["facturas", ""],
+              "query": [{ "key": "limit", "value": "1" }]
+            }
+          }
+        }
+      ]
+    }
+
+  ]
+}

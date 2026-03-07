@@ -21,6 +21,7 @@ const schedulerRoutes = require('./routes/scheduler.routes');
 const contactRoutes     = require('./routes/contacts.routes');
 const campaignRoutes    = require('./routes/campaigns.routes');
 const botPaymentRoutes  = require('./routes/bot-payments.routes');
+const auditRoutes       = require('./routes/audit.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -98,6 +99,7 @@ app.use('/api/scheduler', schedulerRoutes);
 app.use('/api/contacts', contactRoutes);
 app.use('/api/campaigns', campaignRoutes);
 app.use('/api/bot-payments', botPaymentRoutes);
+app.use('/api/audit',       auditRoutes);
 
 // ── Health Check ───────────────────────────────────────────
 app.get('/health', async (req, res) => {
@@ -208,6 +210,28 @@ server.listen(PORT, async () => {
           ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at  TIMESTAMPTZ;
           ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN     DEFAULT false;
           ALTER TABLE messages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+        `,
+      },
+      {
+        name: '003_wisphub_plans_nodo',
+        sql: `
+          CREATE TABLE IF NOT EXISTS wisphub_plans (
+            id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+            wisphub_plan_id  VARCHAR(50) UNIQUE NOT NULL,
+            nombre           VARCHAR(150) NOT NULL,
+            precio           NUMERIC(10,2) NOT NULL DEFAULT 0,
+            velocidad_bajada VARCHAR(30),
+            velocidad_subida VARCHAR(30),
+            activo           BOOLEAN DEFAULT true,
+            wisphub_raw      JSONB,
+            last_synced_at   TIMESTAMPTZ,
+            created_at       TIMESTAMPTZ DEFAULT NOW(),
+            updated_at       TIMESTAMPTZ DEFAULT NOW()
+          );
+          CREATE INDEX IF NOT EXISTS idx_wisphub_plans_id ON wisphub_plans(wisphub_plan_id);
+          ALTER TABLE clients ADD COLUMN IF NOT EXISTS wisphub_plan_id VARCHAR(50);
+          ALTER TABLE clients ADD COLUMN IF NOT EXISTS nodo            VARCHAR(100);
+          CREATE INDEX IF NOT EXISTS idx_clients_wisphub_plan_id ON clients(wisphub_plan_id);
         `,
       },
     ];

@@ -343,6 +343,8 @@ const ejecutarCorteAutomatico = async ({ force = false } = {}) => {
 const sincronizarClientes = async () => {
   logger.info('[SCHEDULER] Sincronizando contactos de WispHub...');
   try {
+    // Sincronizar planes primero → da precios correctos para la sincronización de clientes
+    await wisphub.sincronizarPlanes({ query });
     const result = await wisphub.sincronizarContactos({ query });
     logger.info(`[SCHEDULER] Sync completo: ${result.total} total, ${result.created} nuevos, ${result.updated} actualizados`);
   } catch (err) {

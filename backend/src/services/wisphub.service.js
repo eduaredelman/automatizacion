@@ -219,223 +219,174 @@ const obtenerClientesConDeuda = async () => {
 // DEUDA
 // ─────────────────────────────────────────────────────────────
 
-// planPrice: precio del plan del cliente en BD local (para filtrar la factura correcta,
-// ya que WispHub puede devolver facturas de otros clientes con montos distintos)
-// clientUsuario: campo 'usuario' de WispHub (único por cliente, ej: "pmorales@fiber-fix-sac")
-// Es el identificador más confiable para filtrar facturas de un cliente específico.
+// AUDITORIA CONFIRMADA: La API de WispHub /facturas/ IGNORA todos los query params
+// (id_servicio, usuario, estado). Siempre devuelve TODAS las facturas paginadas.
+// El cliente real de cada factura está en:
+//   f.articulos[0].servicio.id_servicio  → id numérico del servicio
+//   f.cliente.usuario                    → username WispHub del cliente
+// La estrategia correcta: fetch paginado + filtro client-side por esos campos.
+//
+// planPrice: precio mensual desde DB local (fuente de verdad para monto_mensual)
+// clientUsuario: username WispHub (ej: "mfiber101312@fiber-fix-sac")
 const consultarDeuda = async (clienteId, planPrice = null, clientUsuario = null) => {
 
-  // Todas las variantes posibles de estado pendiente en WispHub
   const estadosPendientes = new Set([
     'pendiente', 'no pagada', 'no pagado', 'vencida', 'vencido',
     'Pendiente', 'No Pagada', 'No Pagado', 'Vencida', 'Vencido',
     'pendiente de pago', 'Pendiente de Pago', 'PENDIENTE DE PAGO',
-    'por pagar', 'Por Pagar', 'POR PAGAR',
-    'impago', 'impaga', 'mora', 'atrasado', 'atrasada',
-    'Impago', 'Impaga', 'Mora', 'Atrasado', 'Atrasada',
-    'sin pagar', 'Sin Pagar',
+    'por pagar', 'Por Pagar', 'impago', 'Impago', 'mora', 'Mora',
+    'sin pagar', 'Sin Pagar', 'atrasado', 'Atrasado',
   ]);
 
-  try {
-    let pendientes = [];
+  // Helper: extraer id_servicio real de una factura según la estructura de WispHub
+  const getFacturaServicioId = (f) => {
+    // Nuevo: articulos[0].servicio.id_servicio (confirmado en auditoría)
+    const arts = f.articulos || [];
+    if (arts.length > 0 && arts[0].servicio?.id_servicio) {
+      return String(arts[0].servicio.id_servicio);
+    }
+    // Fallback: campos clásicos que podrían existir en versiones futuras de WispHub
+    return String(f.id_servicio || f.cliente?.id_servicio || '');
+  };
 
-    // ─── ESTRATEGIA 1: filtrar por usuario (identificador único del cliente) ──
-    // Si WispHub soporta filtro por usuario, obtenemos directamente las facturas
-    // de este cliente sin mezcla de otros.
-    if (clientUsuario) {
+  // Helper: extraer usuario de una factura
+  const getFacturaUsuario = (f) => f.cliente?.usuario || f.usuario || '';
+
+  // Helper: ¿pertenece esta factura al cliente buscado?
+  const esDeEsteCliente = (f) => {
+    const fServicioId = getFacturaServicioId(f);
+    const fUsuario    = getFacturaUsuario(f);
+    if (fServicioId && fServicioId === String(clienteId)) return true;
+    if (clientUsuario && fUsuario && fUsuario === clientUsuario)  return true;
+    return false;
+  };
+
+  try {
+    // ─── Si planPrice es conocido: buscar la factura correcta en las páginas recientes ──
+    // Las facturas se devuelven ordenadas por ID DESC (más recientes primero).
+    // Cada cliente tiene ~1 factura por mes, así que con 3 páginas (~300 facturas)
+    // cubrimos los clientes más recientes. Si no encontramos, usamos planPrice directo.
+    let facturaEncontrada = null;
+    const MAX_PAGES = 5;
+
+    for (let page = 0; page < MAX_PAGES && !facturaEncontrada; page++) {
       try {
         const { data } = await withRetry(() =>
-          http.get('/facturas/', { params: { usuario: clientUsuario, estado: 'Pendiente de Pago', limit: 50 } })
+          http.get('/facturas/', { params: { limit: 100, offset: page * 100 } })
         );
-        const rows = data.results || data || [];
-        if (Array.isArray(rows) && rows.length > 0) {
-          pendientes = rows;
-          logger.info('WispHub facturas filtradas por usuario', { clienteId, clientUsuario, count: rows.length });
-        }
-      } catch { /* continúa con fallback */ }
-    }
+        const rows = data.results || (Array.isArray(data) ? data : []);
+        if (!rows.length) break;
 
-    // ─── ESTRATEGIA 2: filtrar por estado (fallback si usuario no funcionó) ──
-    if (pendientes.length === 0) {
-      const statusFilters = [
-        'Pendiente', 'pendiente',
-        'Pendiente de Pago', 'pendiente de pago',
-        'Vencida', 'vencida',
-        'No Pagada', 'no pagada',
-        'Por Pagar',
-      ];
-      for (const estado of statusFilters) {
-        try {
-          const { data } = await withRetry(() =>
-            http.get('/facturas/', { params: { id_servicio: clienteId, estado, limit: 20 } })
-          );
-          const rows = data.results || data || [];
-          if (Array.isArray(rows) && rows.length > 0) {
-            pendientes.push(...rows);
-            logger.info(`WispHub facturas por estado "${estado}"`, { clienteId, count: rows.length });
+        // Filtrar facturas de este cliente con estado pendiente
+        const delCliente = rows.filter(f => esDeEsteCliente(f));
+        const pendientesDelCliente = delCliente.filter(f => {
+          const estado = (f.estado || '').toString();
+          return estadosPendientes.has(estado) || estadosPendientes.has(estado.toLowerCase());
+        });
+
+        if (pendientesDelCliente.length > 0) {
+          // Si planPrice conocido: preferir la factura cuyo monto coincida
+          if (planPrice && planPrice > 0) {
+            facturaEncontrada = pendientesDelCliente.find(f => {
+              const m = parseFloat(f.total || f.sub_total || 0);
+              return Math.abs(m - planPrice) <= 0.51;
+            }) || pendientesDelCliente[0];
+          } else {
+            facturaEncontrada = pendientesDelCliente[0];
           }
-        } catch { /* continúa con el siguiente estado */ }
-      }
-    }
-
-    // Deduplicar por id
-    const seen = new Set();
-    pendientes = pendientes.filter(f => {
-      const id = f.id_factura || f.id;
-      if (seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    });
-
-    // ─── ESTRATEGIA 3: traer todas y filtrar localmente ──────────────────────
-    if (pendientes.length === 0) {
-      const { data } = await withRetry(() =>
-        http.get('/facturas/', { params: { id_servicio: clienteId, limit: 100 } })
-      );
-      const facturas = data.results || data || [];
-      logger.info('WispHub facturas (sin filtro)', {
-        clienteId,
-        total: facturas.length,
-        estados: [...new Set(facturas.map(f => f.estado || f.status))],
-      });
-
-      pendientes = facturas.filter(f => {
-        const estado = (f.estado || f.status || '').toString();
-        return estadosPendientes.has(estado) || estadosPendientes.has(estado.toLowerCase());
-      });
-    }
-
-    // ─── FILTRAR por usuario en la respuesta (si las facturas incluyen el campo) ──
-    // El campo 'usuario' en la factura identifica al cliente dueño de esa factura.
-    if (clientUsuario && pendientes.length > 0) {
-      const porUsuario = pendientes.filter(f => {
-        const fUsuario = f.usuario || f.usuario_wisphub || '';
-        return fUsuario === clientUsuario;
-      });
-      if (porUsuario.length > 0) {
-        if (porUsuario.length < pendientes.length) {
-          logger.info('WispHub: facturas filtradas por usuario (campo en factura)', {
-            clienteId, clientUsuario, original: pendientes.length, filtradas: porUsuario.length,
+          logger.info('WispHub: factura pendiente encontrada (filtro client-side)', {
+            clienteId, clientUsuario, page,
+            facturaId: facturaEncontrada.id_factura,
+            monto: parseFloat(facturaEncontrada.total || 0),
           });
+          break;
         }
-        pendientes = porUsuario;
+
+        // Si las facturas de este cliente en esta página ya están todas pagadas,
+        // pueden estar en páginas anteriores — pero si ya las hay pagadas, el cliente
+        // probablemente no tiene pendientes. Dejar que el bucle continúe igual.
+        if (delCliente.length > 0 && pendientesDelCliente.length === 0) {
+          logger.info('WispHub: cliente encontrado en facturas pero sin pendientes', {
+            clienteId, page, estadosEncontrados: [...new Set(delCliente.map(f => f.estado))],
+          });
+          // No rompemos — podría haber más páginas con facturas pendientes de meses anteriores
+        }
+
+      } catch (err) {
+        logger.warn('WispHub: error en página de facturas', { page, error: err.message });
+        break;
       }
     }
 
-    // ─── FILTRAR por id_servicio si WispHub lo incluye en la respuesta ──────
-    if (pendientes.length > 0) {
-      const conId = pendientes.filter(f => {
-        const facServiceId = String(f.cliente?.id_servicio || f.id_servicio || '');
-        return facServiceId !== '' && facServiceId === String(clienteId);
+    // ─── Si no se encontró factura pero planPrice es conocido ─────────────────
+    // Retornar planPrice como cuota — el bot podrá validar el monto del voucher.
+    // factura_id=null significa que el registro en WispHub se omite (solo DB local).
+    if (!facturaEncontrada && planPrice && planPrice > 0) {
+      logger.warn('WispHub: no se encontró factura pendiente del cliente — usando plan_price', {
+        clienteId, clientUsuario, planPrice,
       });
-      if (conId.length > 0) {
-        if (conId.length < pendientes.length) {
-          logger.info('WispHub: filtradas facturas por id_servicio', {
-            clienteId, original: pendientes.length, filtradas: conId.length,
-          });
-        }
-        pendientes = conId;
-      }
+      return {
+        tiene_deuda:       true,
+        monto_deuda:       planPrice,
+        monto_mensual:     planPrice,
+        cantidad_facturas: 0,
+        factura_id:        null,
+        facturas:          [],
+      };
     }
 
-    // ─── SELECCIONAR LA FACTURA MÁS RECIENTE DEL CLIENTE ────────────────────
-    if (pendientes.length > 0) {
-      // Ordenar por id_factura desc (más reciente primero)
-      pendientes.sort((a, b) => {
-        const idA = parseInt(a.id_factura || a.id || 0);
-        const idB = parseInt(b.id_factura || b.id || 0);
-        return idB - idA;
+    // ─── Si no hay factura ni planPrice ──────────────────────────────────────
+    if (!facturaEncontrada) {
+      logger.warn('WispHub: sin factura pendiente ni plan_price para el cliente', { clienteId, clientUsuario });
+      return {
+        tiene_deuda:       false,
+        monto_deuda:       0,
+        monto_mensual:     0,
+        cantidad_facturas: 0,
+        factura_id:        null,
+        facturas:          [],
+      };
+    }
+
+    const montoFactura = parseFloat(facturaEncontrada.total || facturaEncontrada.sub_total || 0);
+
+    // monto_mensual = precio de 1 mes. Si la factura parece acumulada (>10% mayor al plan),
+    // usar planPrice para que el bot siempre muestre la cuota correcta.
+    let montoMensual = montoFactura;
+    if (planPrice && planPrice > 0 && montoFactura > planPrice * 1.1) {
+      logger.warn('WispHub: monto factura parece acumulado — usando plan_price como cuota mensual', {
+        clienteId, montoFactura, planPrice, ratio: (montoFactura / planPrice).toFixed(2),
       });
-
-      let facturaElegida = null;
-
-      // Si tenemos facturas filtradas por usuario, la más reciente es la correcta
-      if (clientUsuario) {
-        facturaElegida = pendientes[0];
-        if (facturaElegida) {
-          logger.info('WispHub factura seleccionada (filtrada por usuario)', {
-            clienteId, clientUsuario,
-            facturaId: facturaElegida.id_factura || facturaElegida.id,
-            monto: parseFloat(facturaElegida.total || facturaElegida.sub_total || facturaElegida.monto || 0),
-          });
-        }
-      }
-
-      // Sin usuario: intentar coincidir con plan_price
-      if (!facturaElegida && planPrice && planPrice > 0) {
-        facturaElegida = pendientes.find(f => {
-          const fMonto = parseFloat(f.total || f.sub_total || f.monto || 0);
-          return Math.abs(fMonto - planPrice) <= 0.51;
-        });
-        if (facturaElegida) {
-          logger.info('WispHub factura seleccionada por plan_price', {
-            clienteId, planPrice,
-            facturaId: facturaElegida.id_factura || facturaElegida.id,
-            montoFactura: parseFloat(facturaElegida.total || facturaElegida.sub_total || facturaElegida.monto || 0),
-          });
-        } else {
-          logger.warn('WispHub: ninguna factura coincide con plan_price del cliente', {
-            clienteId, planPrice,
-            montosDisponibles: pendientes.slice(0, 5).map(f => parseFloat(f.total || f.sub_total || f.monto || 0)),
-          });
-        }
-      }
-
-      // Si planPrice es conocido pero no hay factura identificable, usar planPrice directamente
-      if (!facturaElegida && planPrice && planPrice > 0) {
-        logger.warn('WispHub: no se puede identificar factura del cliente, usando plan_price como monto', {
-          clienteId, planPrice,
-          montosAPI: pendientes.slice(0, 5).map(f => parseFloat(f.total || f.sub_total || f.monto || 0)),
-        });
-        return {
-          tiene_deuda:   true,
-          monto_deuda:   planPrice,
-          monto_mensual: planPrice,
-          factura_id:    null,
-          facturas:      [],
-        };
-      }
-
-      // Estrategia 3: fallback final → factura de mayor ID (planPrice desconocido)
-      if (!facturaElegida) {
-        facturaElegida = pendientes[0];
-        logger.info('WispHub factura mas reciente seleccionada (fallback por ID)', {
-          clienteId,
-          facturaId:        facturaElegida.id_factura || facturaElegida.id,
-          fecha_vencimiento: facturaElegida.fecha_vencimiento,
-          monto: parseFloat(facturaElegida.total || facturaElegida.sub_total || facturaElegida.monto || 0),
-        });
-      }
-
-      pendientes = [facturaElegida];
+      montoMensual = planPrice;
     }
 
-    const facturaActual = pendientes[0] || null;
-    const monto = parseFloat(
-      facturaActual?.total || facturaActual?.sub_total || facturaActual?.monto || 0
-    );
-
-    if (facturaActual) {
-      logger.info('WispHub monto factura obtenido', { clienteId, monto });
-    }
-
-    logger.info('WispHub deuda resultado', {
-      clienteId,
-      pendientes: pendientes.length,
-      monto_mensual: monto,
-      facturaId: facturaActual?.id_factura || facturaActual?.id || null,
+    logger.info('WispHub deuda resultado final', {
+      clienteId, montoFactura, montoMensual,
+      facturaId: facturaEncontrada.id_factura,
     });
 
     return {
-      tiene_deuda:      pendientes.length > 0,
-      monto_deuda:      monto,
-      monto_mensual:    monto,
-      cantidad_facturas: pendientes.length,
-      factura_id:       facturaActual?.id_factura || facturaActual?.id || null,
-      facturas:         pendientes,
+      tiene_deuda:       true,
+      monto_deuda:       montoFactura,
+      monto_mensual:     montoMensual,
+      cantidad_facturas: 1,
+      factura_id:        facturaEncontrada.id_factura || facturaEncontrada.id || null,
+      facturas:          [facturaEncontrada],
     };
+
   } catch (err) {
     logger.error('WispHub deuda query failed', { clienteId, error: err.message });
+    // Si planPrice conocido, devolver sin lanzar excepción — el bot puede funcionar
+    if (planPrice && planPrice > 0) {
+      return {
+        tiene_deuda:       true,
+        monto_deuda:       planPrice,
+        monto_mensual:     planPrice,
+        cantidad_facturas: 0,
+        factura_id:        null,
+        facturas:          [],
+      };
+    }
     throw err;
   }
 };
@@ -575,9 +526,9 @@ const registrarPago = async (clienteId, paymentData) => {
     referencia: paymentData.operationCode || '',
   };
 
-  logger.info('WispHub: registrando pago', { clienteId, facturaId, monto: body.monto, fecha: fechaPago, metodo, formaPago });
+  logger.info('WispHub: registrando pago', { clienteId, facturaId, monto: body.total_cobrado, fecha: fechaPago, metodo, formaPago });
   const { data } = await http.post(`/facturas/${facturaId}/registrar-pago/`, body);
-  logger.info('WispHub: pago registrado exitosamente', { clienteId, facturaId, monto: body.monto });
+  logger.info('WispHub: pago registrado exitosamente', { clienteId, facturaId, monto: body.total_cobrado });
   return data;
 };
 
@@ -631,13 +582,79 @@ const cortarServicio = async (clienteId, razon = 'Falta de pago') => {
 // ─────────────────────────────────────────────────────────────
 
 const obtenerTelefonoCliente = (cliente) => {
-  const phone = cliente.celular || cliente.telefono || null;
+  const phone = cliente.celular || cliente.movil || cliente.telefono || null;
   if (!phone) return null;
-  // Normalizar para WhatsApp (agregar 51 si es número peruano de 9 dígitos)
   const clean = String(phone).replace(/\D/g, '');
   if (clean.length === 9) return `51${clean}`;
+  if (clean.length === 12 && clean.startsWith('051')) return `51${clean.slice(3)}`;
   if (clean.length === 11 && clean.startsWith('51')) return clean;
   return clean;
+};
+
+// ─────────────────────────────────────────────────────────────
+// SINCRONIZAR PLANES DE WISPHUB → DB local
+// ─────────────────────────────────────────────────────────────
+
+const sincronizarPlanes = async (db) => {
+  logger.info('[WISPHUB] Sincronizando planes...');
+  const endpoints = ['/planes/', '/planes-servicio/', '/plan-servicio/', '/tipos-plan/', '/planes-internet/'];
+  let planes = [];
+
+  for (const ep of endpoints) {
+    try {
+      const { data } = await withRetry(() => http.get(ep, { params: { limit: 200 } }));
+      const results = data.results || data || [];
+      if (Array.isArray(results) && results.length > 0) {
+        planes = results;
+        logger.info(`[WISPHUB] Planes obtenidos desde ${ep}: ${planes.length}`);
+        break;
+      }
+    } catch { /* prueba siguiente endpoint */ }
+  }
+
+  if (planes.length === 0) {
+    logger.warn('[WISPHUB] No se encontraron planes en WispHub');
+    return { total: 0, created: 0, updated: 0 };
+  }
+
+  let created = 0;
+  let updated = 0;
+
+  for (const plan of planes) {
+    try {
+      const planId = String(plan.id || plan.id_plan || '');
+      if (!planId) continue;
+      const nombre = plan.nombre || plan.name || plan.descripcion || 'Sin nombre';
+      const precio = parseFloat(plan.precio || plan.costo || plan.monto || plan.precio_mensual || 0);
+      const bajada = plan.velocidad_bajada || plan.bajada || plan.download || null;
+      const subida = plan.velocidad_subida || plan.subida || plan.upload || null;
+      const activo = plan.activo !== false && plan.activo !== 0 && plan.activo !== '0';
+
+      const result = await db.query(
+        `INSERT INTO wisphub_plans (wisphub_plan_id, nombre, precio, velocidad_bajada, velocidad_subida, activo, wisphub_raw, last_synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (wisphub_plan_id) DO UPDATE SET
+           nombre           = EXCLUDED.nombre,
+           precio           = EXCLUDED.precio,
+           velocidad_bajada = EXCLUDED.velocidad_bajada,
+           velocidad_subida = EXCLUDED.velocidad_subida,
+           activo           = EXCLUDED.activo,
+           wisphub_raw      = EXCLUDED.wisphub_raw,
+           last_synced_at   = NOW(),
+           updated_at       = NOW()
+         RETURNING id, (xmax = 0) AS is_new`,
+        [planId, nombre, precio, bajada, subida, activo, JSON.stringify(plan)]
+      );
+
+      if (result.rows[0]?.is_new) created++;
+      else updated++;
+    } catch (err) {
+      logger.warn('[WISPHUB] Error UPSERT plan', { error: err.message });
+    }
+  }
+
+  logger.info(`[WISPHUB] Planes sync: ${planes.length} total, ${created} nuevos, ${updated} actualizados`);
+  return { total: planes.length, created, updated };
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -678,6 +695,18 @@ const _resolverEstadoServicio = (cliente) => {
 const sincronizarContactos = async (db) => {
   logger.info('[WISPHUB] Iniciando sincronización completa de contactos...');
 
+  // Precargar mapa de planes desde DB local para lookup de precios más confiable
+  const plansMap = {}; // { wisphub_plan_id: precio }
+  try {
+    const plansResult = await db.query('SELECT wisphub_plan_id, precio FROM wisphub_plans WHERE activo = true');
+    for (const row of plansResult.rows) {
+      if (row.wisphub_plan_id) plansMap[row.wisphub_plan_id] = parseFloat(row.precio) || null;
+    }
+    if (Object.keys(plansMap).length > 0) {
+      logger.info(`[WISPHUB] ${Object.keys(plansMap).length} planes precargados para lookup de precios`);
+    }
+  } catch { /* tabla wisphub_plans puede no existir aún */ }
+
   const clientes = await obtenerTodosLosClientes({ soloActivos: false });
 
   // Loguear estructura del primer cliente para diagnóstico
@@ -709,30 +738,45 @@ const sincronizarContactos = async (db) => {
       const address        = cliente.direccion || null;
       const serviceStatus  = _resolverEstadoServicio(cliente);
       const tags           = Array.isArray(cliente.etiquetas) ? cliente.etiquetas : [];
-      const planPrice      = parseFloat(cliente.precio_plan || cliente.precio || 0) || null;
       const fechaRegistro  = cliente.fecha_registro || null;
       const wisphubRaw     = JSON.stringify(cliente);
+      const nodo           = cliente.nodo || cliente.nombre_nodo || cliente.punto_acceso || null;
+      const wisphubPlanId  = String(cliente.id_plan || cliente.plan_id || cliente.id_plan_servicio || '') || null;
+
+      // Precio: desde tabla de planes sincronizados (más confiable) o desde campos del cliente
+      let planPrice = wisphubPlanId && plansMap[wisphubPlanId] ? plansMap[wisphubPlanId] : null;
+      if (!planPrice) {
+        planPrice = parseFloat(
+          cliente.precio_plan || cliente.monto_plan || cliente.costo_plan ||
+          cliente.precio || cliente.costo || cliente.valor || cliente.monto ||
+          cliente.precio_mensual || 0
+        ) || null;
+      }
 
       const result = await db.query(
         `INSERT INTO clients
            (wisphub_id, phone, name, email, service_id, plan, address,
-            service_status, tags, plan_price, fecha_registro, wisphub_raw, last_synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+            service_status, tags, plan_price, fecha_registro, wisphub_raw,
+            wisphub_plan_id, nodo, last_synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
          ON CONFLICT (wisphub_id) DO UPDATE SET
-           phone          = EXCLUDED.phone,
-           name           = EXCLUDED.name,
-           email          = EXCLUDED.email,
-           plan           = EXCLUDED.plan,
-           address        = EXCLUDED.address,
-           service_status = EXCLUDED.service_status,
-           tags           = EXCLUDED.tags,
-           plan_price     = EXCLUDED.plan_price,
-           wisphub_raw    = EXCLUDED.wisphub_raw,
-           last_synced_at = NOW(),
-           updated_at     = NOW()
+           phone           = EXCLUDED.phone,
+           name            = EXCLUDED.name,
+           email           = EXCLUDED.email,
+           plan            = EXCLUDED.plan,
+           address         = EXCLUDED.address,
+           service_status  = EXCLUDED.service_status,
+           tags            = EXCLUDED.tags,
+           plan_price      = CASE WHEN EXCLUDED.plan_price IS NOT NULL THEN EXCLUDED.plan_price ELSE clients.plan_price END,
+           wisphub_raw     = EXCLUDED.wisphub_raw,
+           wisphub_plan_id = COALESCE(EXCLUDED.wisphub_plan_id, clients.wisphub_plan_id),
+           nodo            = COALESCE(EXCLUDED.nodo, clients.nodo),
+           last_synced_at  = NOW(),
+           updated_at      = NOW()
          RETURNING id, (xmax = 0) AS is_new`,
         [wisphubId, phone, name, email, serviceId, plan, address,
-         serviceStatus, tags, planPrice, fechaRegistro, wisphubRaw]
+         serviceStatus, tags, planPrice, fechaRegistro, wisphubRaw,
+         wisphubPlanId, nodo]
       );
 
       if (result.rows[0]?.is_new) created++;
@@ -850,6 +894,7 @@ module.exports = {
   marcarFacturaPagada,
   cortarServicio,
   obtenerTelefonoCliente,
+  sincronizarPlanes,
   sincronizarContactos,
   buscarFacturasPagadas,
   obtenerFormasPago: _obtenerFormasPago,

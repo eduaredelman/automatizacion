@@ -248,7 +248,7 @@ const generateConversationalResponse = async (userMessage, history = [], clientI
     if (montoMensual === 0) {
       deudaTexto = 'S/ 0.00 — cuenta al día ✅';
     } else {
-      deudaTexto = `S/ ${montoMensual} — cuota mensual del servicio`;
+      deudaTexto = `S/ ${montoMensual} ⚠️ ESTE ES EL PRECIO DE UN SOLO MES. NO es la deuda total acumulada.`;
     }
   }
 
@@ -342,7 +342,8 @@ CÓMO RESPONDER SEGÚN EL MENSAJE:
    → USA EXACTAMENTE el valor de "Cuota mensual ACTUAL" del bloque de arriba. NUNCA uses montos del historial.
    → Si el historial menciona un monto diferente, IGNÓRALO — el sistema ya actualizó los datos.
    → Responde SOLO con la cuota mensual: "Tu cuota mensual es S/ [monto]. Envíanos tu comprobante de pago."
-   → NUNCA menciones deuda total, número de facturas acumuladas ni montos de meses anteriores.
+   → PROHIBIDO: calcular ni mencionar cuántas facturas pendientes hay, ni multiplicar la cuota por meses, ni mostrar deuda acumulada.
+   → PROHIBIDO: mostrar cualquier monto distinto al de "Cuota mensual ACTUAL". Si ves montos mayores en el historial, IGNÓRALOS.
    → Si el cliente pregunta por meses anteriores o deuda acumulada: "Para regularizar pagos anteriores comunícate con un asesor: *932258382*"
    → Si no hay deuda: "[Nombre], tu servicio está al día. 😊"
    → Sin datos: "En este momento no puedo consultar. Comunícate con soporte: *932258382*"

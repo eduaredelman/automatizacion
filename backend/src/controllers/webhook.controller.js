@@ -487,12 +487,8 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 
     // ── MODO CHAT ──────────────────────────────────────────────────
     let debtMsg = '';
-    if (clientInfo.tiene_deuda && clientInfo.debt_amount > 0) {
-      if (clientInfo.cantidad_facturas && clientInfo.monto_mensual) {
-        debtMsg = `\n\n⚠️ Tienes *${clientInfo.cantidad_facturas} ${clientInfo.cantidad_facturas === 1 ? 'factura pendiente' : 'facturas pendientes'}* de *S/ ${clientInfo.monto_mensual}*/mes. Total a pagar: *S/ ${clientInfo.debt_amount}*.`;
-      } else {
-        debtMsg = `\n\n⚠️ Tienes un saldo pendiente de *S/ ${clientInfo.debt_amount}*.`;
-      }
+    if (clientInfo.tiene_deuda && clientInfo.monto_mensual > 0) {
+      debtMsg = `\n\n⚠️ Tu cuota mensual es *S/ ${clientInfo.monto_mensual}*.`;
     }
     const welcome = `¡Hola, *${providedName}*! 😊${debtMsg}\n\n¿En qué puedo ayudarte hoy?`;
     await whatsapp.sendTextMessage(phone, welcome);
@@ -519,7 +515,7 @@ const autoResolveConversation = async (conversationId, reason = 'auto') => {
       [conversationId]
     );
     await logEvent(conversationId, null, 'conversation_resolved', reason);
-    await emitSocketEvent('conversation_updated', { conversationId, status: 'resolved' });
+    await emitSocketEvent('conversation_update', { conversationId, status: 'resolved' });
     logger.info('Conversación auto-resuelta', { conversationId, reason });
   } catch (err) {
     logger.warn('autoResolve error', { conversationId, error: err.message });
