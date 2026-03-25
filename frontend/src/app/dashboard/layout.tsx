@@ -15,7 +15,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // Guard: redirigir si no hay token
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const token = localStorage.getItem('wp_token');
+    const raw = localStorage.getItem('wp-auth');
+    const token = raw ? (JSON.parse(raw)?.state?.token ?? null) : null;
     if (!token) router.replace('/login');
   }, [router]);
 
