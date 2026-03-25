@@ -17,9 +17,18 @@ const listChats = async (req, res) => {
     const params = [];
 
     if (status) { params.push(status); where += ` AND c.status = $${params.length}`; }
-    if (search) { params.push(`%${search}%`); where += ` AND (c.phone ILIKE $${params.length} OR c.display_name ILIKE $${params.length})`; }
+    if (search) {
+      params.push(`%${search}%`);
+      // Busca en: teléfono, nombre del chat, nombre del cliente WispHub sincronizado
+      where += ` AND (c.phone ILIKE $${params.length} OR c.display_name ILIKE $${params.length} OR cl.name ILIKE $${params.length})`;
+    }
 
-    const countResult = await query(`SELECT COUNT(*) FROM conversations c ${where}`, params);
+    // El JOIN con clients es necesario tanto para el WHERE (búsqueda por nombre WispHub) como para el SELECT
+    const baseFrom = `FROM conversations c
+       LEFT JOIN agents a ON a.id = c.assigned_to
+       LEFT JOIN clients cl ON cl.id = c.client_id`;
+
+    const countResult = await query(`SELECT COUNT(*) ${baseFrom} ${where}`, params);
     const total = parseInt(countResult.rows[0].count);
 
     params.push(limit, offset);
@@ -32,9 +41,7 @@ const listChats = async (req, res) => {
         cl.plan            AS client_plan,
         cl.plan_price      AS client_plan_price,
         cl.wisphub_id      AS client_wisphub_id
-       FROM conversations c
-       LEFT JOIN agents a ON a.id = c.assigned_to
-       LEFT JOIN clients cl ON cl.id = c.client_id
+       ${baseFrom}
        ${where}
        ORDER BY c.last_message_at DESC NULLS LAST
        LIMIT $${params.length - 1} OFFSET $${params.length}`,

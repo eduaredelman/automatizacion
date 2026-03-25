@@ -10,7 +10,14 @@ export const getSocket = (): Socket | null => {
   if (typeof window === 'undefined') return null;
 
   if (!socket) {
-    const token = localStorage.getItem('wp_token');
+    // Leer token desde Zustand persist ('wp-auth') — misma fuente que api.ts
+    let token: string | null = null;
+    try {
+      const raw = localStorage.getItem('wp-auth');
+      token = raw ? (JSON.parse(raw)?.state?.token ?? null) : null;
+    } catch { token = null; }
+    // Fallback legacy
+    if (!token) token = localStorage.getItem('wp_token');
     if (!token) return null;
 
     socket = io(SOCKET_URL, {

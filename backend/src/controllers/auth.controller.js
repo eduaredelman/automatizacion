@@ -4,6 +4,10 @@ const { query } = require('../config/database');
 const { success, error } = require('../utils/response');
 const logger = require('../utils/logger');
 
+// Hash dummy para normalizar tiempo de respuesta y evitar timing attack
+// (bcrypt.compare tarda ~100ms; sin esto, se puede detectar si un email existe por velocidad)
+const DUMMY_HASH = '$2b$12$invalidhashfortimingprotectionnnnnnnnnnnnnnnnnn';
+
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -14,7 +18,12 @@ const login = async (req, res) => {
       [email.toLowerCase().trim()]
     );
 
-    if (!result.rows.length) return error(res, 'Credenciales inválidas', 401);
+    if (!result.rows.length) {
+      // Comparar contra hash dummy para que el tiempo de respuesta sea igual
+      // tanto si el email existe como si no existe
+      await bcrypt.compare(password, DUMMY_HASH);
+      return error(res, 'Credenciales inválidas', 401);
+    }
 
     const agent = result.rows[0];
     const validPassword = await bcrypt.compare(password, agent.password);

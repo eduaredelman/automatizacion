@@ -13,9 +13,19 @@ export const getApi = (): AxiosInstance => {
     });
 
     apiInstance.interceptors.request.use((config) => {
-      const token = typeof window !== 'undefined'
-        ? localStorage.getItem('wp_token')
-        : null;
+      // Leer token desde Zustand persist ('wp-auth') — única fuente de verdad.
+      // Fallback a 'wp_token' legacy para compatibilidad con sesiones anteriores.
+      let token: string | null = null;
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem('wp-auth');
+          token = raw ? (JSON.parse(raw)?.state?.token ?? null) : null;
+        } catch {
+          token = null;
+        }
+        // Fallback legacy
+        if (!token) token = localStorage.getItem('wp_token');
+      }
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
@@ -98,6 +108,14 @@ export const api = {
     getApi().get('/bot-payments', { params }),
   reconcileBotPayments: () =>
     getApi().post('/bot-payments/reconcile', {}),
+  getClientesMes: (params?: Record<string, unknown>) =>
+    getApi().get('/bot-payments/clientes-mes', { params }),
+  sendMensajeDeudores: (data: { mes: number; ano: number; mensaje?: string }) =>
+    getApi().post('/bot-payments/send-deudores', data),
+  getMatrizPagos: (params?: Record<string, unknown>) =>
+    getApi().get('/bot-payments/matriz', { params }),
+  getHistorialCliente: (clientId: string) =>
+    getApi().get(`/bot-payments/historial/${clientId}`),
 };
 
 export default api;

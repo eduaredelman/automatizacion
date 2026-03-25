@@ -2,7 +2,6 @@ const { query } = require('../config/database');
 const whatsapp = require('../services/whatsapp.service');
 const ai = require('../services/ai.service');
 const payment = require('../services/payment.service');
-const wisphub = require('../services/wisphub.service');
 const logger = require('../utils/logger');
 const { getPaymentBlock } = require('../config/payment-info');
 
@@ -371,101 +370,67 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
 
     logger.info('Nombre registrado', { phone, providedName, mode });
 
-    // Buscar en WispHub POR NOMBRE para vincular cliente (deuda, plan, pagos)
-    // NUNCA por teléfono — el nombre viene del cliente, no de WispHub
-    let wispClient = null;
+    // Buscar cliente en DB local por nombre (datos sincronizados desde WispHub — sin llamada a la API)
+    let localClient = null;
     try {
-      wispClient = await wisphub.buscarClientePorNombre(providedName);
+      const nameWords = providedName.trim().split(/\s+/);
+      const nameResult = await query(
+        `SELECT id, wisphub_id, name, plan, plan_price, service_status
+         FROM clients
+         WHERE name ILIKE $1 AND wisphub_id IS NOT NULL
+         ORDER BY (name ILIKE $2) DESC
+         LIMIT 1`,
+        [`%${nameWords[0]}%`, `%${providedName}%`]
+      );
+      if (nameResult.rows.length) localClient = nameResult.rows[0];
     } catch (e) {
-      logger.warn('WispHub name search failed', { phone, error: e.message });
+      logger.warn('Error buscando cliente en DB local por nombre', { phone, error: e.message });
     }
 
     let clientInfo = { name: providedName };
 
-    if (wispClient) {
-      const clientId   = String(wispClient.id_servicio || wispClient.id);
-      const clientName = wispClient.nombre || wispClient.name || providedName;
+    if (localClient) {
+      const clientName = localClient.name || providedName;
+      const planPrice  = parseFloat(localClient.plan_price) || null;
 
-      // Extraer nombre del plan — WispHub puede usar varios campos
-      const clientPlan = wispClient.plan || wispClient.nombre_plan || wispClient.plan_nombre ||
-                         wispClient.servicio || wispClient.tipo_plan || null;
-
-      // Extraer precio del plan directamente del objeto WispHub
-      // (campo puede variar: precio_plan, monto_plan, costo, valor, precio_mensual, etc.)
-      const planPrice  = parseFloat(
-        wispClient.precio_plan || wispClient.monto_plan || wispClient.costo_plan ||
-        wispClient.precio || wispClient.costo || wispClient.valor || wispClient.monto ||
-        wispClient.precio_mensual || 0
-      ) || null;
-
-      // Log completo del objeto WispHub para diagnosticar campos disponibles
-      logger.info('WispHub client object fields', {
-        phone, clientId,
-        campos: Object.keys(wispClient),
-        plan: clientPlan,
-        planPrice,
-        rawPlan: {
-          plan: wispClient.plan,
-          nombre_plan: wispClient.nombre_plan,
-          plan_nombre: wispClient.plan_nombre,
-          precio_plan: wispClient.precio_plan,
-          monto_plan: wispClient.monto_plan,
-          costo: wispClient.costo,
-          precio: wispClient.precio,
-          valor: wispClient.valor,
-          monto: wispClient.monto,
-        },
-      });
-
-      // Upsert cliente en caché local
-      const clientRes = await query(
-        `INSERT INTO clients (wisphub_id, phone, name, service_id, plan, last_synced_at)
-         VALUES ($1,$2,$3,$4,$5,NOW())
-         ON CONFLICT (wisphub_id) DO UPDATE
-           SET phone=$2, name=$3, service_id=$4, plan=$5, last_synced_at=NOW()
-         RETURNING id`,
-        [clientId, phone, clientName, clientId, clientPlan]
-      );
-
-      // Vincular conversación al cliente WispHub y actualizar display_name al nombre oficial
+      // Vincular conversación al cliente local
       await query(
         `UPDATE conversations SET client_id = $1, display_name = $2 WHERE id = $3`,
-        [clientRes.rows[0].id, clientName, conversation.id]
+        [localClient.id, clientName, conversation.id]
       );
-      conversation.client_id = clientRes.rows[0].id;
+      conversation.client_id = localClient.id;
 
-      // Emitir nombre oficial WispHub al frontend (puede diferir de lo que el cliente escribió)
+      // Emitir nombre real al frontend si difiere de lo escrito por el cliente
       if (clientName !== providedName) {
         emitToAgents('conversation_update', {
           conversationId: conversation.id,
           display_name: clientName,
-          client_id: clientRes.rows[0].id,
+          client_id: localClient.id,
           bot_intent: 'identity_ok',
         });
       }
 
-      clientInfo = { name: clientName, plan: clientPlan, wisphub_id: clientId };
+      clientInfo = { name: clientName, plan: localClient.plan, wisphub_id: localClient.wisphub_id, service_status: localClient.service_status };
 
-      // Obtener deuda real — usuario de WispHub identifica las facturas del cliente
-      try {
-        const debtInfo = await wisphub.consultarDeuda(clientId, planPrice, wispClient.usuario || null);
-        clientInfo.monto_mensual = debtInfo.monto_mensual || planPrice || null;
-        clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
-      } catch {}
+      // Usar plan_price de DB local — sin consulta live a WispHub
+      if (planPrice) {
+        clientInfo.monto_mensual = planPrice;
+        clientInfo.tiene_deuda   = true;
+      }
 
-      logger.info('Cliente vinculado a WispHub', { phone, wispName: clientName, wisphub_id: clientId, plan: clientPlan, planPrice });
+      logger.info('Cliente vinculado desde DB local por nombre', { phone, clientName, wisphub_id: localClient.wisphub_id });
     } else {
-      logger.info('Nombre no encontrado en WispHub, continuando sin vincular', { phone, providedName });
+      logger.info('Nombre no encontrado en DB local', { phone, providedName });
     }
 
     // ── MODO PAGO ──────────────────────────────────────────────────
     if (mode === 'payment') {
-      if (!wispClient) {
-        // No está en WispHub → escalar para revisión manual
-        const response = `No encontré una cuenta registrada con el nombre *${providedName}* en nuestro sistema.\n\nUn *asesor* revisará tu comprobante manualmente. 👨‍💼`;
+      if (!localClient) {
+        // No encontrado en DB local → informar y escalar (sin crear cliente)
+        const response = `No encontramos una cuenta registrada con el nombre *${providedName}* en nuestro sistema.\n\nPor favor comunícate con soporte: *932258382* 👨‍💼`;
         await whatsapp.sendTextMessage(phone, response);
         await saveOutboundMessage(conversation.id, response, 'bot');
-        await escalateToHuman(conversation, `"${providedName}" no encontrado en WispHub para pago`);
+        await escalateToHuman(conversation, `"${providedName}" no encontrado en DB local para pago`);
         return;
       }
 
@@ -486,6 +451,15 @@ const handleNameInput = async ({ conversation, phone, text, mode }) => {
     }
 
     // ── MODO CHAT ──────────────────────────────────────────────────
+    if (!localClient) {
+      // No encontrado en DB local — informar al cliente sin crear registro
+      const notFoundMsg = `No encontramos una cuenta registrada con el nombre *${providedName}* en nuestro sistema.\n\nSi ya tienes servicio con nosotros, comunícate con soporte: *932258382* 😊`;
+      await whatsapp.sendTextMessage(phone, notFoundMsg);
+      await saveOutboundMessage(conversation.id, notFoundMsg, 'bot');
+      await escalateToHuman(conversation, `"${providedName}" no encontrado en DB local (modo chat)`);
+      return;
+    }
+
     let debtMsg = '';
     if (clientInfo.tiene_deuda && clientInfo.monto_mensual > 0) {
       debtMsg = `\n\n⚠️ Tu cuota mensual es *S/ ${clientInfo.monto_mensual}*.`;
@@ -633,15 +607,12 @@ const handleTextMessage = async ({ conversation, message, phone, text }) => {
           const cc = ccRes.rows[0];
           const ccNameIsReal = cc.name && cc.name.includes(' ');
           const bestName = isRealName ? rawDisplayName : (ccNameIsReal ? cc.name : 'Cliente');
+          const planPrice = parseFloat(cc.plan_price) || null;
           clientInfo = { name: bestName, plan: cc.plan, wisphub_id: cc.wisphub_id, service_status: cc.service_status };
-          if (cc.wisphub_id) {
-            try {
-              const planPrice = parseFloat(cc.plan_price) || null;
-              const wisphubUsuario = cc.wisphub_usuario || null;
-              const debtInfo = await wisphub.consultarDeuda(cc.wisphub_id, planPrice, wisphubUsuario);
-              clientInfo.monto_mensual = debtInfo.monto_mensual;
-              clientInfo.tiene_deuda   = debtInfo.tiene_deuda;
-            } catch {}
+          // Usar plan_price de DB local — sin consulta live a WispHub
+          if (planPrice) {
+            clientInfo.monto_mensual = planPrice;
+            clientInfo.tiene_deuda   = true;
           }
         }
       } catch (e) {
@@ -766,7 +737,7 @@ const buildPaymentResponse = (result) => {
       return `📸 La imagen no está clara. Por favor toma la foto con buena iluminación y que se vea el monto y el número de operación.\n\nIntenta de nuevo. 🔄`;
 
     case 'client_not_found':
-      return `No encontramos tu número registrado como cliente de Fiber Perú.\n\nSi ya tienes contrato: *932258382*\nSi deseas contratar: *940366709* 😊`;
+      return `No encontramos tu cuenta en nuestro sistema. Por favor comunícate con soporte para verificar tu registro: *932258382* 👨‍💼`;
 
     case 'fraud_detected': {
       const año = aiData?.yearDetected || 'anterior';

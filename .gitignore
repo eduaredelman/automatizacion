@@ -32,6 +32,10 @@ logs/
 *.log
 *-audit.json
 
+# ── Build artifacts ─────────────────────────────────────────────
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
 # ── IDE ────────────────────────────────────────────────────────
 .vscode/
 .idea/

@@ -21,8 +21,10 @@ export default function ChatsPage() {
 
   const loadChats = useCallback(async () => {
     try {
+      // Con búsqueda activa: traer hasta 500 para encontrar chats antiguos.
+      // Sin búsqueda: solo los 50 más recientes (mejor performance).
       const { data } = await api.getChats({
-        limit: 50,
+        limit: search ? 500 : 50,
         search: search || undefined,
         status: statusFilter || undefined,
       });

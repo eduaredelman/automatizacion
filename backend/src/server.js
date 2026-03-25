@@ -1,4 +1,25 @@
 require('dotenv').config();
+
+// ── Validación de variables de entorno críticas ────────────────────────────
+// Falla rápido (fail-fast) en lugar de arrancar con config rota.
+// Es mejor no arrancar que arrancar mal y procesar pagos sin tokens válidos.
+const REQUIRED_ENV = [
+  'JWT_SECRET',
+  'WHATSAPP_TOKEN',
+  'WHATSAPP_PHONE_ID',
+  'OPENAI_API_KEY',
+  'DATABASE_URL',
+];
+const missingVars = REQUIRED_ENV.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+  console.error(`\n❌ FATAL: Variables de entorno requeridas no definidas:\n  ${missingVars.join('\n  ')}\n`);
+  process.exit(1);
+}
+if (process.env.JWT_SECRET.length < 32) {
+  console.error('\n❌ FATAL: JWT_SECRET debe tener mínimo 32 caracteres.\n');
+  process.exit(1);
+}
+
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
@@ -136,6 +157,28 @@ server.listen(PORT, async () => {
   const dbOk = await checkConnection();
   if (dbOk) {
     logger.info('✅ PostgreSQL connected');
+
+    // ── Advisory lock: garantiza que solo UNA instancia corre las migraciones
+    // aunque haya múltiples contenedores/procesos levantando simultáneamente.
+    // pg_try_advisory_lock es no-bloqueante: si ya hay otro proceso con el lock,
+    // esta instancia simplemente espera y no corre migraciones dos veces.
+    const MIGRATION_LOCK_KEY = 987654321; // Número único para este proyecto
+    let migrationLockAcquired = false;
+    const MAX_LOCK_WAIT_MS = 30000;
+    const LOCK_RETRY_MS = 500;
+    const lockStart = Date.now();
+
+    while (Date.now() - lockStart < MAX_LOCK_WAIT_MS) {
+      const lockResult = await query('SELECT pg_try_advisory_lock($1) AS acquired', [MIGRATION_LOCK_KEY]);
+      if (lockResult.rows[0].acquired) { migrationLockAcquired = true; break; }
+      logger.info('⏳ Esperando lock de migración (otra instancia corriendo migraciones)...');
+      await new Promise(r => setTimeout(r, LOCK_RETRY_MS));
+    }
+
+    if (!migrationLockAcquired) {
+      logger.warn('⚠️ No se pudo adquirir lock de migración — otra instancia tiene el control. Continuando sin migrar.');
+    }
+
     // Aplicar migraciones pendientes (SQL inline — no depende de archivos externos)
     const MIGRATIONS = [
       {
@@ -235,14 +278,20 @@ server.listen(PORT, async () => {
         `,
       },
     ];
-    for (const m of MIGRATIONS) {
-      try {
-        await query(m.sql);
-        logger.info(`✅ Migration ${m.name} applied`);
-      } catch (err) {
-        logger.warn(`Migration ${m.name} warning:`, err.message);
+    if (migrationLockAcquired) {
+      for (const m of MIGRATIONS) {
+        try {
+          await query(m.sql);
+          logger.info(`✅ Migration ${m.name} applied`);
+        } catch (err) {
+          logger.warn(`Migration ${m.name} warning:`, err.message);
+        }
       }
+      // Liberar el lock para que otras instancias puedan continuar
+      await query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]);
+      logger.info('🔓 Migration lock liberado');
     }
+
     // Iniciar scheduler DESPUÉS de confirmar que la DB está lista
     initScheduler();
   } else {

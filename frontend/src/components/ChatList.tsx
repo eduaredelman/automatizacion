@@ -68,9 +68,17 @@ export default function ChatList({
             type="text"
             value={search}
             onChange={(e) => onSearch(e.target.value)}
-            placeholder="Buscar por nombre o teléfono..."
+            placeholder="Buscar nombre, teléfono... (todos)"
             className="input-field pl-9 py-2 text-xs"
           />
+          {search && (
+            <button
+              onClick={() => onSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white text-xs"
+            >
+              ×
+            </button>
+          )}
         </div>
 
         {/* Status filter */}
@@ -79,7 +87,8 @@ export default function ChatList({
             { value: '', label: 'Todos' },
             { value: 'bot', label: '🤖 Bot' },
             { value: 'human', label: '👤 Asesor' },
-            { value: 'resolved', label: '✅ Resuelto' },
+            { value: 'resolved', label: '✅ Resueltos' },
+            { value: 'spam', label: '🚫 Spam' },
           ].map(({ value, label }) => (
             <button
               key={value}

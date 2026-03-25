@@ -55,7 +55,27 @@ const downloadMedia = async (mediaId) => {
     });
 
     const mime = mediaInfo.mime_type || response.headers['content-type'] || 'image/jpeg';
-    const ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
+
+    // Whitelist de MIME permitidos — rechazar SVG (XSS), ejecutables, etc.
+    const ALLOWED_MIME = [
+      'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+      'application/pdf',
+      'audio/ogg', 'audio/mpeg', 'audio/mp4', // audios de WhatsApp
+      'video/mp4',                              // videos de WhatsApp
+    ];
+    const mimeBase = mime.split(';')[0].trim().toLowerCase();
+    if (!ALLOWED_MIME.includes(mimeBase)) {
+      logger.warn('Media MIME rechazado por whitelist', { mediaId, mime: mimeBase });
+      throw new Error(`Tipo de archivo no permitido: ${mimeBase}`);
+    }
+
+    const EXT_MAP = {
+      'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+      'image/gif': 'gif', 'application/pdf': 'pdf',
+      'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a',
+      'video/mp4': 'mp4',
+    };
+    const ext = EXT_MAP[mimeBase] || 'bin';
     const filename = `${mediaId}.${ext}`;
     const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '../../uploads');
 

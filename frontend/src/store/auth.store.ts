@@ -30,7 +30,8 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
         try {
           const { data } = await api.login(email, password);
-          localStorage.setItem('wp_token', data.data.token);
+          // Zustand persist (name: 'wp-auth') escribe automáticamente en localStorage.
+          // NO escribir también en 'wp_token' para evitar doble fuente de verdad.
           set({ token: data.data.token, agent: data.data.agent, isLoading: false });
         } catch (err) {
           set({ isLoading: false });
@@ -39,7 +40,9 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
-        localStorage.removeItem('wp_token');
+        // Zustand persist limpia 'wp-auth' automáticamente al hacer set(null).
+        // Limpiar también 'wp_token' legacy por si quedó de versiones anteriores.
+        if (typeof window !== 'undefined') localStorage.removeItem('wp_token');
         set({ token: null, agent: null });
       },
 

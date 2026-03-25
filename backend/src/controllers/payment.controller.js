@@ -30,6 +30,15 @@ const listPayments = async (req, res) => {
       where += ` AND p.status = 'validated' AND (p.registered_wisphub = false OR p.registered_wisphub IS NULL)`;
     }
 
+    // Filtro por mes/año opcional (usa payment_date o validated_at o created_at)
+    const mesFilter = parseInt(req.query.mes) || null;
+    const anoFilter = parseInt(req.query.ano) || null;
+    if (mesFilter && anoFilter) {
+      const de = `COALESCE(p.payment_date::timestamptz, p.validated_at, p.created_at)`;
+      params.push(anoFilter); where += ` AND EXTRACT(YEAR  FROM ${de}) = $${params.length}`;
+      params.push(mesFilter); where += ` AND EXTRACT(MONTH FROM ${de}) = $${params.length}`;
+    }
+
     const countResult = await query(
       `SELECT COUNT(*) FROM payments p LEFT JOIN conversations c ON c.id = p.conversation_id ${where}`,
       params

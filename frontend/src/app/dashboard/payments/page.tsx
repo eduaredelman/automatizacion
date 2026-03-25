@@ -8,7 +8,7 @@ import { es } from 'date-fns/locale';
 import VoucherModal from '@/components/VoucherModal';
 import {
   CreditCard, RefreshCw, Trash2, CheckCircle2,
-  Clock, AlertTriangle, DollarSign, MessageSquare, Search, WifiOff, Upload,
+  Clock, AlertTriangle, DollarSign, MessageSquare, Search,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -34,18 +34,25 @@ interface Stats {
   total_validated: number;
   total_amount: number;
   today: number;
-  unregistered_wisphub: number;
   by_status: { status: string; count: string }[];
 }
 
+const MESES_OPTS = [
+  { value: 1,  label: 'Enero' }, { value: 2,  label: 'Febrero' },
+  { value: 3,  label: 'Marzo' }, { value: 4,  label: 'Abril' },
+  { value: 5,  label: 'Mayo' },  { value: 6,  label: 'Junio' },
+  { value: 7,  label: 'Julio' }, { value: 8,  label: 'Agosto' },
+  { value: 9,  label: 'Septiembre' }, { value: 10, label: 'Octubre' },
+  { value: 11, label: 'Noviembre' }, { value: 12, label: 'Diciembre' },
+];
+
 const STATUS_OPTIONS = [
-  { value: '', label: 'Todos', wisphub: '' },
-  { value: 'pending', label: 'Pendientes', wisphub: '' },
-  { value: 'validated', label: 'Validados', wisphub: '' },
-  { value: 'rejected', label: 'Rechazados', wisphub: '' },
-  { value: 'manual_review', label: 'En revisión', wisphub: '' },
-  { value: 'duplicate', label: 'Duplicados', wisphub: '' },
-  { value: '', label: '⚠ No registrado en WispHub', wisphub: 'unregistered' },
+  { value: '', label: 'Todos' },
+  { value: 'pending', label: 'Pendientes' },
+  { value: 'validated', label: 'Validados' },
+  { value: 'rejected', label: 'Rechazados' },
+  { value: 'manual_review', label: 'En revisión' },
+  { value: 'duplicate', label: 'Duplicados' },
 ];
 
 const STATUS_BADGE: Record<string, string> = {
@@ -75,14 +82,17 @@ export default function PaymentsPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
-  const [wisphubFilter, setWisphubFilter] = useState('');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [registeringId, setRegisteringId] = useState<string | null>(null);
+  // Filtro por mes/año (null = sin filtro → muestra todo)
+  const now = new Date();
+  const [mesFilter, setMesFilter] = useState<number | null>(null);
+  const [anoFilter, setAnoFilter] = useState<number>(now.getFullYear());
+  const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   // Debounce de búsqueda
   const handleSearchChange = (val: string) => {
@@ -99,7 +109,8 @@ export default function PaymentsPage() {
           page, limit: 20,
           status: statusFilter || undefined,
           search: search || undefined,
-          wisphub_filter: wisphubFilter || undefined,
+          mes: mesFilter ?? undefined,
+          ano: mesFilter ? anoFilter : undefined,
         }),
         api.getPaymentStats(),
       ]);
@@ -111,7 +122,7 @@ export default function PaymentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter, wisphubFilter, search]);
+  }, [page, statusFilter, search, mesFilter, anoFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -130,21 +141,6 @@ export default function PaymentsPage() {
       setPendingOpenPhone(p.phone);
     }
     router.push('/dashboard/chats');
-  };
-
-  const handleRegisterWisphub = async (p: Payment, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setRegisteringId(p.id);
-    try {
-      await api.registerWisphub(p.id);
-      setPayments(prev => prev.map(x => x.id === p.id ? { ...x, registered_wisphub: true } : x));
-      load(); // refresh stats
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message || 'Error al registrar';
-      alert(msg);
-    } finally {
-      setRegisteringId(null);
-    }
   };
 
   const handleDelete = async (p: Payment, e: React.MouseEvent) => {
@@ -200,36 +196,52 @@ export default function PaymentsPage() {
             </button>
           </div>
         </div>
+        {/* Filtro por mes */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-slate-500 font-medium">Mes:</span>
+          <select
+            value={mesFilter ?? ''}
+            onChange={e => { setMesFilter(e.target.value ? Number(e.target.value) : null); setPage(1); }}
+            className="bg-slate-800/60 border border-slate-700/50 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          >
+            <option value="">Todos los meses</option>
+            {MESES_OPTS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+          {mesFilter && (
+            <select
+              value={anoFilter}
+              onChange={e => { setAnoFilter(Number(e.target.value)); setPage(1); }}
+              className="bg-slate-800/60 border border-slate-700/50 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            >
+              {years.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          )}
+          {mesFilter && (
+            <button
+              onClick={() => { setMesFilter(null); setPage(1); }}
+              className="text-xs text-slate-500 hover:text-white transition-all px-2 py-1 rounded-lg hover:bg-slate-800/50"
+            >
+              Limpiar ×
+            </button>
+          )}
+        </div>
+
         {/* Filtros */}
         <div className="flex items-center gap-1.5 flex-wrap">
-          {STATUS_OPTIONS.map(({ value, label, wisphub }, i) => {
-            const isActive = statusFilter === value && wisphubFilter === wisphub;
-            const isUnregistered = wisphub === 'unregistered';
-            return (
-              <button
-                key={i}
-                onClick={() => { setStatusFilter(value); setWisphubFilter(wisphub); setPage(1); }}
-                className={clsx(
-                  'px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1',
-                  isActive && isUnregistered
-                    ? 'bg-yellow-600/30 text-yellow-300 border border-yellow-500/40'
-                    : isActive
-                    ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40'
-                    : isUnregistered
-                    ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
-                    : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
-                )}
-              >
-                {isUnregistered && <WifiOff className="w-3 h-3" />}
-                {label}
-                {isUnregistered && stats?.unregistered_wisphub ? (
-                  <span className="ml-1 bg-yellow-500/20 text-yellow-400 px-1.5 rounded-full text-[10px]">
-                    {stats.unregistered_wisphub}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+          {STATUS_OPTIONS.map(({ value, label }, i) => (
+            <button
+              key={i}
+              onClick={() => { setStatusFilter(value); setPage(1); }}
+              className={clsx(
+                'px-3 py-1.5 rounded-xl text-xs font-medium transition-all',
+                statusFilter === value
+                  ? 'bg-blue-600/30 text-blue-300 border border-blue-500/40'
+                  : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -276,24 +288,13 @@ export default function PaymentsPage() {
             </p>
           </div>
 
-          <div
-            className={clsx(
-              'glass rounded-2xl p-4 border cursor-pointer transition-all',
-              (stats?.unregistered_wisphub ?? 0) > 0
-                ? 'border-yellow-500/40 hover:border-yellow-500/60'
-                : 'border-slate-700/30'
-            )}
-            onClick={() => { setStatusFilter(''); setWisphubFilter('unregistered'); setPage(1); }}
-            title="Ver pagos no registrados en WispHub"
-          >
+          <div className="glass rounded-2xl p-4 border border-red-500/20">
             <div className="flex items-center gap-2 mb-2">
-              <WifiOff className={clsx('w-4 h-4', (stats?.unregistered_wisphub ?? 0) > 0 ? 'text-yellow-400' : 'text-slate-600')} />
-              <span className="text-xs text-slate-400">Sin registrar WispHub</span>
+              <Trash2 className="w-4 h-4 text-red-400" />
+              <span className="text-xs text-slate-400">Rechazados</span>
             </div>
-            <p className={clsx('text-2xl font-bold', (stats?.unregistered_wisphub ?? 0) > 0 ? 'text-yellow-400' : 'text-slate-600')}>
-              {stats?.unregistered_wisphub ?? '—'}
-            </p>
-            <p className="text-xs text-slate-500 mt-1">validados · requieren revisión</p>
+            <p className="text-2xl font-bold text-red-400">{getStatCount('rejected')}</p>
+            <p className="text-xs text-slate-500 mt-1">{getStatCount('duplicate')} duplicados</p>
           </div>
         </div>
 
@@ -351,21 +352,9 @@ export default function PaymentsPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3.5">
-                        <div className="flex flex-col gap-1">
-                          <span className={STATUS_BADGE[p.status] || 'badge'}>
-                            {STATUS_LABELS[p.status] || p.status}
-                          </span>
-                          {p.status === 'validated' && (
-                            <span className={clsx(
-                              'text-[10px] px-1.5 py-0.5 rounded font-medium w-fit',
-                              p.registered_wisphub
-                                ? 'text-emerald-400 bg-emerald-500/10'
-                                : 'text-yellow-500 bg-yellow-500/10'
-                            )}>
-                              {p.registered_wisphub ? '✓ WispHub' : '! WispHub'}
-                            </span>
-                          )}
-                        </div>
+                        <span className={STATUS_BADGE[p.status] || 'badge'}>
+                          {STATUS_LABELS[p.status] || p.status}
+                        </span>
                       </td>
                       <td className="px-4 py-3.5">
                         <span className={clsx(
@@ -391,19 +380,6 @@ export default function PaymentsPage() {
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
                           </button>
-                          {p.status === 'validated' && !p.registered_wisphub && (
-                            <button
-                              onClick={(e) => handleRegisterWisphub(p, e)}
-                              disabled={registeringId === p.id}
-                              title="Registrar en WispHub"
-                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-slate-500 hover:text-yellow-400 hover:bg-yellow-500/10 transition-all disabled:opacity-50"
-                            >
-                              {registeringId === p.id
-                                ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                : <Upload className="w-3.5 h-3.5" />
-                              }
-                            </button>
-                          )}
                           <button
                             onClick={(e) => handleDelete(p, e)}
                             disabled={deletingId === p.id}

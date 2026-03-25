@@ -112,7 +112,10 @@ Luego envía la foto del comprobante a este chat y reactivamos tu servicio en mi
  *   force=true → omite el chequeo de días 1-5 (para ejecución manual del panel)
  */
 const enviarAvisosCobro = async ({ force = false } = {}) => {
-  const dia = new Date().getDate();
+  const dia  = new Date().getDate();
+  const now  = new Date();
+  const ano  = now.getFullYear();
+  const mes  = now.getMonth() + 1;
 
   if (!force && (dia < 1 || dia > 5)) {
     logger.debug(`Scheduler: día ${dia} no requiere aviso de cobro`);
@@ -122,71 +125,37 @@ const enviarAvisosCobro = async ({ force = false } = {}) => {
   logger.info(`[SCHEDULER] Iniciando avisos de cobro - Día ${dia}${force ? ' (manual/forzado)' : ''}`);
 
   try {
-    // ── Paso 1: Obtener montos de deuda desde WispHub ──────────────────────
-    // Solo usamos WispHub para saber CUÁNTO deben, no para buscar teléfonos.
-    const facturasPorServicio = {}; // { wisphub_id → { monto, nombre } }
-
-    try {
-      const facturas = await wisphub.obtenerClientesConDeuda();
-      logger.info(`[SCHEDULER] WispHub retornó ${facturas.length} facturas pendientes`);
-
-      for (const f of facturas) {
-        const idServicio = String(
-          f.id_servicio          ||
-          f.cliente?.id_servicio ||
-          f.cliente_id           || ''
-        );
-        if (!idServicio) continue;
-
-        const monto  = f.total || f.sub_total || f.monto_total || f.monto;
-        const nombre = f.cliente?.nombre || f.cliente?.nombre_completo ||
-                       f.nombre || f.cliente_nombre || '';
-
-        if (!facturasPorServicio[idServicio]) {
-          facturasPorServicio[idServicio] = { monto, nombre };
-        }
-      }
-
-      logger.info(`[SCHEDULER] Mapeados ${Object.keys(facturasPorServicio).length} clientes con deuda`);
-    } catch (err) {
-      logger.warn('[SCHEDULER] No se pudo consultar WispHub facturas, se usará solo DB local', {
-        error: err.message,
-      });
-    }
-
-    const wispIds = Object.keys(facturasPorServicio);
-
-    // ── Paso 2: Obtener clientes con teléfono desde DB local ───────────────
-    // La tabla clients tiene 1121+ contactos sincronizados con teléfonos normalizados.
-    // Es MUCHO más confiable que extraer teléfonos de las facturas de WispHub.
+    // ── Fuente única: DB local (PostgreSQL) ────────────────────────────────
+    // Día 1: avisa a TODOS los clientes activos con teléfono.
+    // Días 2-5: solo a quienes NO tienen pago validado en el mes actual.
     let dbQuery, dbParams;
 
-    if (wispIds.length > 0) {
-      // Tenemos lista de morosos de WispHub → solo notificar a esos
-      dbQuery  = `SELECT wisphub_id, phone, name, debt_amount
-                  FROM clients
-                  WHERE wisphub_id = ANY($1::text[])
-                    AND phone IS NOT NULL AND phone != ''`;
-      dbParams = [wispIds];
+    if (dia === 1 || force && dia === 1) {
+      // Primer aviso del mes → todos los activos
+      dbQuery = `
+        SELECT wisphub_id, phone, name, plan_price
+        FROM clients
+        WHERE wisphub_id IS NOT NULL
+          AND phone IS NOT NULL AND phone != ''
+          AND (service_status IS NULL OR service_status NOT IN ('cortado','suspendido'))`;
+      dbParams = [];
     } else {
-      // WispHub no devolvió datos → usar clientes de DB local
-      if (dia === 1) {
-        // Día 1: aviso general a todos los clientes activos
-        dbQuery  = `SELECT wisphub_id, phone, name, debt_amount
-                    FROM clients
-                    WHERE wisphub_id IS NOT NULL
-                      AND phone IS NOT NULL AND phone != ''
-                      AND (service_status IS NULL OR service_status != 'cortado')`;
-        dbParams = [];
-      } else {
-        // Días 2-5 sin WispHub: solo quienes tienen deuda registrada localmente
-        dbQuery  = `SELECT wisphub_id, phone, name, debt_amount
-                    FROM clients
-                    WHERE wisphub_id IS NOT NULL
-                      AND phone IS NOT NULL AND phone != ''
-                      AND debt_amount > 0`;
-        dbParams = [];
-      }
+      // Días 2-5 → solo los que aún no pagaron este mes
+      dbQuery = `
+        SELECT c.wisphub_id, c.phone, c.name, c.plan_price
+        FROM clients c
+        WHERE c.wisphub_id IS NOT NULL
+          AND c.phone IS NOT NULL AND c.phone != ''
+          AND (c.service_status IS NULL OR c.service_status NOT IN ('cortado','suspendido'))
+          AND NOT EXISTS (
+            SELECT 1 FROM payments p
+            LEFT JOIN conversations conv ON conv.id = p.conversation_id
+            WHERE p.status = 'validated'
+              AND EXTRACT(YEAR  FROM COALESCE(p.payment_date::timestamptz, p.validated_at, p.created_at)) = $1
+              AND EXTRACT(MONTH FROM COALESCE(p.payment_date::timestamptz, p.validated_at, p.created_at)) = $2
+              AND COALESCE(p.client_id, conv.client_id) = c.id
+          )`;
+      dbParams = [ano, mes];
     }
 
     const { rows: clientes } = await query(dbQuery, dbParams);
@@ -196,24 +165,22 @@ const enviarAvisosCobro = async ({ force = false } = {}) => {
       return { enviados: 0, errores: 0, total: 0, skipped: false };
     }
 
-    logger.info(`[SCHEDULER] Enviando avisos a ${clientes.length} clientes`);
+    logger.info(`[SCHEDULER] Enviando avisos a ${clientes.length} clientes (solo DB local)`);
 
     let enviados = 0;
     let errores  = 0;
 
     for (const cliente of clientes) {
       try {
-        const wispData = facturasPorServicio[cliente.wisphub_id] || {};
-        const monto    = wispData.monto  ?? cliente.debt_amount;
-        const nombre   = wispData.nombre || cliente.name || '';
-        const phone    = cliente.phone;
+        const monto  = cliente.plan_price ?? null;
+        const nombre = cliente.name || '';
+        const phone  = cliente.phone;
 
         const mensajeFn = MENSAJE_COBRO_DIA[dia] || MENSAJE_COBRO_DIA[5];
         const mensaje   = mensajeFn(nombre, monto);
 
         await whatsapp.sendTextMessage(phone, mensaje);
 
-        // Registrar en events (conversation_id es nullable, no necesita valor)
         await query(
           `INSERT INTO events (event_type, description, metadata)
            VALUES ('payment_reminder_sent', $1, $2)`,
@@ -224,8 +191,6 @@ const enviarAvisosCobro = async ({ force = false } = {}) => {
         ).catch(() => {});
 
         enviados++;
-
-        // 500ms entre mensajes (respetar límites de Meta WhatsApp Cloud API)
         await new Promise(r => setTimeout(r, 500));
 
       } catch (err) {
@@ -259,61 +224,64 @@ const ejecutarCorteAutomatico = async ({ force = false } = {}) => {
   logger.info(`[SCHEDULER] ⚠️  INICIANDO CORTE AUTOMÁTICO${force ? ' (manual/forzado)' : ' DÍA 10'}`);
 
   try {
-    // Obtener clientes con deuda (para determinar quién cortar)
-    const facturas = await wisphub.obtenerClientesConDeuda();
+    const now = new Date();
+    const ano = now.getFullYear();
+    const mes = now.getMonth() + 1;
 
-    if (!facturas.length) {
+    // ── Fuente única: DB local ─────────────────────────────────────────────
+    // Clientes activos que NO tienen pago validado en el mes actual
+    const { rows: clientes } = await query(
+      `SELECT c.wisphub_id, c.phone, c.name
+       FROM clients c
+       WHERE c.wisphub_id IS NOT NULL
+         AND (c.service_status IS NULL OR c.service_status NOT IN ('cortado','suspendido'))
+         AND NOT EXISTS (
+           SELECT 1 FROM payments p
+           LEFT JOIN conversations conv ON conv.id = p.conversation_id
+           WHERE p.status = 'validated'
+             AND EXTRACT(YEAR  FROM COALESCE(p.payment_date::timestamptz, p.validated_at, p.created_at)) = $1
+             AND EXTRACT(MONTH FROM COALESCE(p.payment_date::timestamptz, p.validated_at, p.created_at)) = $2
+             AND COALESCE(p.client_id, conv.client_id) = c.id
+         )`,
+      [ano, mes]
+    );
+
+    if (!clientes.length) {
       logger.info('[SCHEDULER] No hay clientes para cortar servicio');
       return { cortados: 0, errores: 0, total: 0, skipped: false };
     }
 
-    // Mapear id_servicio para lookup rápido
-    const wispIds = [...new Set(facturas.map(f =>
-      String(f.id_servicio || f.cliente?.id_servicio || '')
-    ).filter(Boolean))];
-
-    // Obtener teléfonos/nombres de DB local
-    const { rows: clientesDB } = await query(
-      `SELECT wisphub_id, phone, name FROM clients
-       WHERE wisphub_id = ANY($1::text[])
-         AND phone IS NOT NULL AND phone != ''`,
-      [wispIds]
-    );
-    const clientesPorId = Object.fromEntries(clientesDB.map(c => [c.wisphub_id, c]));
-
-    logger.info(`[SCHEDULER] Procesando corte para ${facturas.length} facturas`);
+    logger.info(`[SCHEDULER] Procesando corte para ${clientes.length} clientes sin pago en ${mes}/${ano}`);
 
     let cortados = 0;
     let errores  = 0;
 
-    for (const factura of facturas) {
+    for (const cliente of clientes) {
       try {
-        const idServicio = String(
-          factura.id_servicio || factura.cliente?.id_servicio || ''
-        );
-        if (!idServicio) continue;
+        const idServicio = cliente.wisphub_id;
 
         // 1. Cortar servicio en WispHub
         const corteResult = await wisphub.cortarServicio(idServicio, 'Falta de pago - Corte automático día 10');
 
-        // 2. Notificar al cliente por WhatsApp
-        const clienteDB  = clientesPorId[idServicio];
-        const clienteObj = factura.cliente || factura;
-        const phone      = clienteDB?.phone || wisphub.obtenerTelefonoCliente(clienteObj);
-        const nombre     = clienteDB?.name  || clienteObj.nombre || clienteObj.nombre_completo || '';
+        // 2. Actualizar estado en DB local
+        await query(
+          `UPDATE clients SET service_status = 'cortado', updated_at = NOW() WHERE wisphub_id = $1`,
+          [idServicio]
+        ).catch(() => {});
 
-        if (phone) {
-          await whatsapp.sendTextMessage(phone, MENSAJE_CORTE(nombre));
+        // 3. Notificar por WhatsApp (solo si tiene teléfono)
+        if (cliente.phone) {
+          await whatsapp.sendTextMessage(cliente.phone, MENSAJE_CORTE(cliente.name || ''));
           await new Promise(r => setTimeout(r, 500));
         }
 
-        // 3. Log
+        // 4. Log
         await query(
           `INSERT INTO events (event_type, description, metadata)
            VALUES ('service_cut', $1, $2)`,
           [
             `Corte automático - cliente ${idServicio}`,
-            JSON.stringify({ idServicio, phone, success: corteResult.success }),
+            JSON.stringify({ idServicio, phone: cliente.phone, success: corteResult?.success ?? true }),
           ]
         ).catch(() => {});
 
@@ -322,13 +290,13 @@ const ejecutarCorteAutomatico = async ({ force = false } = {}) => {
 
       } catch (err) {
         errores++;
-        logger.error(`[SCHEDULER] Error al cortar servicio`, { error: err.message });
+        logger.error(`[SCHEDULER] Error al cortar servicio ${cliente.wisphub_id}`, { error: err.message });
         await new Promise(r => setTimeout(r, 2000));
       }
     }
 
     logger.info(`[SCHEDULER] Corte completado: ${cortados} cortados, ${errores} errores`);
-    return { cortados, errores, total: facturas.length, skipped: false };
+    return { cortados, errores, total: clientes.length, skipped: false };
 
   } catch (err) {
     logger.error('[SCHEDULER] Error crítico en ejecutarCorteAutomatico', { error: err.message });

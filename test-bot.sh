@@ -17,10 +17,11 @@ echo "=================================="
 # ── 1. Login ──────────────────────────────────────────────────
 echo ""
 echo "[1/3] Autenticando..."
-TOKEN=$(curl -s -X POST "$BASE/api/auth/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token') or d.get('data',{}).get('token','ERROR'))" 2>/dev/null)
+TOKEN=$(printf '{"email":"%s","password":"%s"}' "$EMAIL" "$PASS" | \
+  curl -s -X POST "$BASE/api/auth/login" \
+    -H "Content-Type: application/json" \
+    --data-binary @- | \
+  python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('data') or d).get('token',''))" 2>/dev/null)
 
 if [ "$TOKEN" = "ERROR" ] || [ -z "$TOKEN" ]; then
   echo "ERROR: No se pudo obtener token. Verificar credenciales."
